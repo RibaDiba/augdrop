@@ -1,0 +1,12 @@
+# torchvision RandAugment's defaults. Its vocabulary is fixed (randaug_default minus
+# Identity), so the vocab must be the one below. Probe-only: it can't augment training yet.
+defaults:
+  - override /vocab@_global_.vocab: randaug_default
+
+name: randaugment
+num_ops: 2
+magnitude: 9
+num_magnitude_bins: 31
+probe_interval: ${probe.schedule.interval}
+probe_iters: ${probe.schedule.iters}
+control_iters: ${probe.schedule.control_iters}

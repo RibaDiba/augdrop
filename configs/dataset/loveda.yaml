@@ -1,0 +1,36 @@
+# LoveDA (urban + rural remote sensing), 7 classes; label 0 ("no-data") is dropped.
+#   <data_root>/img_dir/{train,val}/*.png
+#   <data_root>/ann_dir/{train,val}/*.png
+# Sensaug's `loveDA` under its data root (configs/nexus.yaml `datasets:`), converted by
+# its dataset_converters/loveda.py. The val Resize is the identity on 1024x1024 images,
+# so the label keeps the image's size.
+# Sensaug trained LoveDA's SA-loop arms at a tenth of the task's learning rate ("LoveDA
+# doesn't converge very well on default lr"). tasks/mmseg/config.py applies the same
+# x0.1 with the sensaug host only, so other hosts train LoveDA at the task's full lr.
+name: loveda
+kind: seg
+role: train
+num_classes: 7
+data_root: ${cluster.data_root}/loveDA
+shift_targets: []
+
+mmseg:
+  crop_size: [512, 512]
+  dataset:
+    type: LoveDADataset
+  # Sensaug's train pipeline for every arm: mmseg's minus RandomResize, RandomFlip and
+  # PhotoMetricDistortion, so the host's ops are the only augmentation.
+  train:
+    data_prefix: {img_path: img_dir/train, seg_map_path: ann_dir/train}
+    pipeline:
+      - {type: LoadImageFromFile}
+      - {type: LoadAnnotations, reduce_zero_label: true}
+      - {type: RandomCrop, crop_size: '${dataset.mmseg.crop_size}', cat_max_ratio: 0.75}
+      - {type: PackSegInputs}
+  val:
+    data_prefix: {img_path: img_dir/val, seg_map_path: ann_dir/val}
+    pipeline:
+      - {type: LoadImageFromFile}
+      - {type: Resize, scale: [1024, 1024], keep_ratio: true}
+      - {type: LoadAnnotations, reduce_zero_label: true}
+      - {type: PackSegInputs}

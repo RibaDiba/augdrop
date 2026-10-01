@@ -1,0 +1,4 @@
+# torchvision TrivialAugmentWide's 13 ops at its wide ranges. Identity is the host's
+# no-op draw, not an op.
+families: [trivialaug_wide]
+exclude: [trivialaug_wide.Identity]

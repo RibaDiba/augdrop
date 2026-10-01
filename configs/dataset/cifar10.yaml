@@ -1,0 +1,16 @@
+# CIFAR-10 through torchvision.datasets.CIFAR10: <data_root>/cifar-10-batches-py/.
+# The probe and the eval read the 10k test set (the "val" split); training the 50k.
+name: cifar10
+kind: cls
+role: train
+num_classes: 10
+data_root: ${cluster.data_root}/cifar10
+download: false            # true fetches it into data_root (login node only on clusters)
+mean: [0.4914, 0.4822, 0.4465]
+std: [0.2470, 0.2435, 0.2616]
+# The standard CIFAR crop + flip, applied to every training image before the host's
+# op, for every arm. null drops them.
+base_aug: {crop_padding: 4, hflip: true}
+# Pre-rendered CIFAR-10-C (<corruption>.npy + labels.npy) for scripts/eval.py; null
+# corrupts on the fly with eval.corruptions instead.
+corruptions_root: ${cluster.data_root}/CIFAR-10-C

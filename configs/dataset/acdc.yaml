@@ -1,0 +1,26 @@
+# ACDC (adverse conditions: fog, night, rain, snow), in Cityscapes' 19 train ids. A
+# domain-shift TEST set for Cityscapes-trained models, as in Sensaug's test.py: never
+# trained on. Laid out the way Sensaug's copy on Nexus is (all four conditions pooled):
+#   <data_root>/rgb_anno/test/**/*_rgb_anon.png
+#   <data_root>/gt/test/**/*_gt_labelTrainIds.png
+# For one condition point data_prefix at rgb_anno_<cond>/test and gt_<cond>/test.
+name: acdc
+kind: seg
+role: eval_only
+eval_for: cityscapes       # the training dataset whose label space this shares
+num_classes: 19
+data_root: ${cluster.data_root}/acdc
+
+mmseg:
+  crop_size: [512, 1024]
+  dataset:
+    type: CityscapesDataset
+    img_suffix: _rgb_anon.png
+    seg_map_suffix: _gt_labelTrainIds.png
+  val:
+    data_prefix: {img_path: rgb_anno/test, seg_map_path: gt/test}
+    pipeline:
+      - {type: LoadImageFromFile}
+      - {type: Resize, scale: [2048, 1024], keep_ratio: true}
+      - {type: LoadAnnotations}
+      - {type: PackSegInputs}

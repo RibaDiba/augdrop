@@ -1,0 +1,30 @@
+# ADE20K (ADEChallengeData2016), 150 classes; label 0 ("other") is dropped.
+#   <data_root>/images/{training,validation}/*.jpg
+#   <data_root>/annotations/{training,validation}/*.png
+# The val Resize makes the image smaller than its label, which the torchvision
+# geometric ops (randaug_default, trivialaug_wide) refuse; the DIFF32 ops handle it.
+name: ade20k
+kind: seg
+role: train
+num_classes: 150
+data_root: ${cluster.data_root}/ade/ADEChallengeData2016
+shift_targets: []
+
+mmseg:
+  crop_size: [512, 512]
+  dataset:
+    type: ADE20KDataset
+  train:
+    data_prefix: {img_path: images/training, seg_map_path: annotations/training}
+    pipeline:
+      - {type: LoadImageFromFile}
+      - {type: LoadAnnotations, reduce_zero_label: true}
+      - {type: RandomCrop, crop_size: '${dataset.mmseg.crop_size}', cat_max_ratio: 0.75}
+      - {type: PackSegInputs}
+  val:
+    data_prefix: {img_path: images/validation, seg_map_path: annotations/validation}
+    pipeline:
+      - {type: LoadImageFromFile}
+      - {type: Resize, scale: [2048, 512], keep_ratio: true}
+      - {type: LoadAnnotations, reduce_zero_label: true}
+      - {type: PackSegInputs}

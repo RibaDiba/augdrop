@@ -1,0 +1,15 @@
+# The 10 ops AutoAugment's ImageNet policy applies, in AutoAugmentHost's order:
+# RandAugment's ops (same ranges), plus Invert, which RandAugment dropped.
+# AutoContrast, Equalize and Invert have no magnitude, so the probe leaves them NaN.
+ops:
+  - randaug_default.AutoContrast
+  - randaug_default.Equalize
+  - randaug_default.Rotate
+  - randaug_default.Solarize
+  - randaug_default.Color
+  - randaug_default.Posterize
+  - randaug_default.Contrast
+  - randaug_default.Sharpness
+  - randaug_default.ShearX
+  - autoaugment.Invert
+exclude: []

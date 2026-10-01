@@ -1,0 +1,6 @@
+# Hard: greedy min-redundancy max-relevance. Sensaug's mRMR arm. Keeps
+# ceil(A / (1 + lam)) of the measured ops (0.25 keeps ~80%, 1.0 half).
+name: mrmr
+lam: 0.25
+lambda_ramp: linear
+mode: squared

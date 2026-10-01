@@ -1,0 +1,7 @@
+# The lambda = 0 control: R is measured and logged at every probe, and the host's q is
+# never touched. (kl_reweight at lam 0, which ApplyWeightsHook never applies.)
+name: kl_reweight
+control: true              # lam must stay 0
+lam: 0.0
+lambda_ramp: linear
+mode: squared

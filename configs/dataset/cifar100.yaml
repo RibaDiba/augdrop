@@ -1,0 +1,11 @@
+# CIFAR-100 through torchvision.datasets.CIFAR100: <data_root>/cifar-100-python/.
+name: cifar100
+kind: cls
+role: train
+num_classes: 100
+data_root: ${cluster.data_root}/cifar100
+download: false
+mean: [0.5071, 0.4865, 0.4409]
+std: [0.2673, 0.2564, 0.2762]
+base_aug: {crop_padding: 4, hflip: true}
+corruptions_root: ${cluster.data_root}/CIFAR-100-C

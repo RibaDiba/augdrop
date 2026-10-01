@@ -1,0 +1,20 @@
+# ResNet-18 image classification (tasks/cls): torchvision's resnet18, trained by a
+# plain PyTorch loop that augments with the host's draws and runs the probe on the
+# host's schedule, as the mmseg hooks do.
+backend: cls
+backbone: resnet18                         # train.py --backbone finds a task by this
+arch: resnet18                             # a torchvision.models constructor
+cifar_stem: true                           # 3x3 stride-1 conv1, no max-pool (32x32 inputs)
+max_iters: 78200                           # 200 epochs of 50k images at 128
+batch_size: 128                            # per GPU
+num_workers: 4
+optimizer:
+  lr: 0.1                                  # at batch_size x world size 128; not rescaled
+  momentum: 0.9
+  weight_decay: 5.0e-4
+  nesterov: true
+warmup_iters: 0
+lr_schedule: cosine                        # cosine | constant
+val_interval: ${idiv:${.max_iters},20}
+checkpoint_interval: ${.val_interval}
+amp: false

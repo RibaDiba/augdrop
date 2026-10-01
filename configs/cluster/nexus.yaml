@@ -1,0 +1,6 @@
+# UMD Nexus (gamma). data_root is Sensaug's, so the datasets it prepared are reused.
+data_root: /gammascratch/amodak/SensAug/data
+work_root: /gammascratch/amodak/dropaug/experiments
+# Nexus nodes have internet, so the backbone checkpoints download: null. Set it to a
+# directory of staged checkpoints (Sensaug's PRETRAINED_CACHE_DIR) to replace the URLs.
+pretrained_cache: null

@@ -1,0 +1,31 @@
+# Cityscapes, fine annotations, 19 train ids.
+#   <data_root>/leftImg8bit/{train,val}/<city>/*_leftImg8bit.png
+#   <data_root>/gtFine/{train,val}/<city>/*_gtFine_labelTrainIds.png   (cityscapesscripts)
+name: cityscapes
+kind: seg                  # which tasks can use it: seg (mmseg) | cls
+role: train                # train | eval_only
+num_classes: 19
+data_root: ${cluster.data_root}/cityscapes
+shift_targets: [acdc, idd] # eval_only datasets in this label space (scripts/eval.py --dataset)
+
+mmseg:
+  crop_size: [512, 1024]
+  dataset:
+    type: CityscapesDataset
+  # Sensaug's train pipeline for every arm: mmseg's minus RandomResize, RandomFlip and
+  # PhotoMetricDistortion, so the host's ops are the only augmentation.
+  train:
+    data_prefix: {img_path: leftImg8bit/train, seg_map_path: gtFine/train}
+    pipeline:
+      - {type: LoadImageFromFile}
+      - {type: LoadAnnotations}
+      - {type: RandomCrop, crop_size: '${dataset.mmseg.crop_size}', cat_max_ratio: 0.75}
+      - {type: PackSegInputs}
+  # Clean and deterministic: the probe draws its images from this split.
+  val:
+    data_prefix: {img_path: leftImg8bit/val, seg_map_path: gtFine/val}
+    pipeline:
+      - {type: LoadImageFromFile}
+      - {type: Resize, scale: [2048, 1024], keep_ratio: true}
+      - {type: LoadAnnotations}
+      - {type: PackSegInputs}

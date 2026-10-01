@@ -1,0 +1,10 @@
+# Uniform over the vocab plus one no-op draw: Sensaug's --random-aug bank. Works with
+# any vocab; only DIFF32 ops can augment training.
+defaults:
+  - override /vocab@_global_.vocab: sensaug32   # this host's default vocab (top-level cfg.vocab)
+
+name: uniform
+none_prob: null            # null: 1 / (A + 1)
+probe_interval: ${probe.schedule.interval}
+probe_iters: ${probe.schedule.iters}
+control_iters: ${probe.schedule.control_iters}

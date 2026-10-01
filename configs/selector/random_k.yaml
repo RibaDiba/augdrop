@@ -1,0 +1,6 @@
+# Hard: k ops at random from the same pool, at the same budget. The null band; run it
+# at several seeds next to every ranked selector.
+name: random_k
+lam: 0.25
+lambda_ramp: linear
+seed: ${seed}              # the run's seed, so a seed sweep is a null band

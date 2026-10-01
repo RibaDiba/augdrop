@@ -1,0 +1,15 @@
+# @package _global_
+# An experiment is a named set of group choices and overrides:
+#   python train.py +experiment=cityscapes_uniform_mrmr [more overrides]
+# Flags and later overrides still win over what is set here.
+defaults:
+  - override /task: mmseg_segformer_b0
+  - override /dataset: cityscapes
+  - override /host: uniform
+  - override /selector: mrmr
+
+selector:
+  lam: 0.25
+probe:
+  magnitude: 0.5
+  n_probe: 500

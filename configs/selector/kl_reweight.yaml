@@ -1,0 +1,6 @@
+# Soft: q(a) ~ p(a) exp(-lam red(a)). Sensaug's Lever 3. Never zeroes an op.
+name: kl_reweight
+lam: 0.25                  # target strength
+lambda_ramp: linear        # linear: lam grows 0 -> target over training; constant
+mode: squared              # how R is reduced to red(a): squared | abs | signed
+min_std: 1.0e-6

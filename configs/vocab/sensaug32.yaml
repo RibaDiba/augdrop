@@ -1,0 +1,5 @@
+# Sensaug's 32 DIFF32 ops in its order: 14 legacy_hsv, 10 geometric, 8 pil_autoaug.
+# Unsigned [0, 1] magnitudes; the only ops training can augment with.
+# A vocab is vocab.build_vocab's config: `families` or `ops`, and `exclude`.
+families: [legacy_hsv, geometric, pil_autoaug]
+exclude: []

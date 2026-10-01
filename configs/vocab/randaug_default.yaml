@@ -1,0 +1,4 @@
+# torchvision RandAugment's 13 ops at AutoAugment's Table 6 ranges. Identity is the
+# host's no-op draw (none_prob), not an op, so it is left out.
+families: [randaug_default]
+exclude: [randaug_default.Identity]

@@ -1,0 +1,18 @@
+# Sensaug's policy (hosts/sensaug.py). Its probe fires on Sensaug's round grid, not on
+# probe.schedule. With this host the SA loop (tasks/mmseg/loops.py, knobs in configs/sa/)
+# builds the training pdf every round after warmup_rounds, and a selector's q is applied
+# on top of it by ApplyWeightsHook. Before the first SA pdf it trains on the warmup policy
+# (uniform over the ops, plus none). The mmseg builder sets task.val_interval to the
+# round interval (max_iters // n_rounds) and the loop's warmup_rounds to this one.
+defaults:
+  - override /vocab@_global_.vocab: sensaug32   # this host's default vocab (top-level cfg.vocab)
+
+name: sensaug
+max_iters: ${task.max_iters}
+n_rounds: 20
+warmup_rounds: 4
+corr_cadence: 3
+corr_rounds: null          # explicit firing rounds instead of the derived ones
+control_rounds: null
+pre_train_round: ${sa.init_sa}   # follows sa.init_sa: the host and the train loop must agree
+probe_interval: null       # a fixed clock instead of the round grid (Sensaug's --corr-interval)

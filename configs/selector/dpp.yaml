@@ -1,0 +1,6 @@
+# Hard: greedy MAP of the DPP L = diag(rel) S diag(rel) (Chen et al. 2018). Same budget
+# rule as mrmr.
+name: dpp
+lam: 0.25
+lambda_ramp: linear
+mode: squared

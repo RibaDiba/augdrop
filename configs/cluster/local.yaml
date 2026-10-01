@@ -1,0 +1,7 @@
+# Paths on this machine. Every dataset config places its data under data_root.
+data_root: data
+work_root: experiments
+# A directory of pretrained backbone checkpoints. When set, an mmseg backbone's
+# download.openmmlab.com URL is replaced by <pretrained_cache>/<basename of the URL>
+# (Sensaug's PRETRAINED_CACHE_DIR). null downloads as usual.
+pretrained_cache: null

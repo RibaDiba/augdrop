@@ -1,0 +1,44 @@
+# The primary config. An experiment is one choice from each group below plus the
+# run-level keys at the bottom. Every entry point composes it the same way:
+#
+#   python train.py --dataset cityscapes --host uniform --selector mrmr --lam 0.5
+#   python train.py +experiment=cityscapes_uniform_mrmr probe.magnitude=0.3
+#   python train.py --dataset cifar10 --task cls_resnet18 vocab=randaug_default host=uniform
+#
+# Flags pick groups; anything after them is a Hydra override, applied after the
+# flags. train.py writes the resolved config to <work_dir>/dropaug.yaml, and
+# scripts/probe.py and scripts/eval.py rebuild the run from that file.
+defaults:
+  - cluster: local
+  - task: mmseg_segformer_b0
+  - dataset: cityscapes
+  - vocab: sensaug32       # a placeholder: the host config below overrides it with its own
+                           # default, and vocab=<name> on the CLI wins over both
+  - host: uniform
+  - selector: none
+  - probe: default
+  - sa: default            # the SA loop's knobs; only read when host=sensaug
+  - _self_
+
+seed: 0
+# The run directory. null: <cluster.work_root>/<host>_<selector>[-l<lam>]_<dataset>_<backbone>_s<seed>,
+# the name slurm/train.sbatch gives it.
+work_dir: null
+# false builds the host (the probe reads its schedule and vocabulary) but trains on
+# clean images: Sensaug's control. Only the DIFF32 ops on the sensaug and uniform
+# hosts can augment training; any other host needs augment=false.
+augment: true
+resume: false              # continue the run in work_dir (train.py --resume)
+launcher: none             # none | pytorch (torchrun)
+
+# scripts/eval.py: dropaug.eval's suite on a checkpoint.
+eval:
+  strengths: [0.2, 0.4, 0.6, 0.8, 1.0]     # every vocab op at each (probe.strength_to_magnitude)
+  both_directions: false                   # also the mirrored side of signed ops
+  # On-the-fly ImageNet-C corruptions (needs imagecorruptions). A dataset with a
+  # corruptions_root (CIFAR-10-C / -100-C) uses its pre-rendered set instead.
+  corruptions: [motion_blur, zoom_blur, pixelate, jpeg_compression, snow, frost, fog]
+  combination: true                        # Sensaug's six combination levels (needs cv2)
+  batch_size: 1
+  num_workers: 4
+  seed: 0

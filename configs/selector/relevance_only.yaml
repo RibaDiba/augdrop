@@ -1,0 +1,5 @@
+# Hard: top-k by the host's prior, R unused. The ablation of mrmr's redundancy term.
+# Declines on a flat prior, i.e. on every host but sensaug with an SA pdf.
+name: relevance_only
+lam: 0.25
+lambda_ramp: linear

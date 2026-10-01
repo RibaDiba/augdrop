@@ -1,0 +1,30 @@
+# PASCAL VOC 2012 segmentation (not the SBD-augmented set), 21 classes.
+#   <data_root>/JPEGImages/*.jpg, <data_root>/SegmentationClass/*.png
+#   <data_root>/ImageSets/Segmentation/{train,val}.txt
+# Same val-resize caveat as ade20k for the torchvision geometric ops.
+name: pascal_voc12
+kind: seg
+role: train
+num_classes: 21
+data_root: ${cluster.data_root}/VOCdevkit/VOC2012
+shift_targets: []
+
+mmseg:
+  crop_size: [512, 512]
+  dataset:
+    type: PascalVOCDataset
+    data_prefix: {img_path: JPEGImages, seg_map_path: SegmentationClass}
+  train:
+    ann_file: ImageSets/Segmentation/train.txt
+    pipeline:
+      - {type: LoadImageFromFile}
+      - {type: LoadAnnotations}
+      - {type: RandomCrop, crop_size: '${dataset.mmseg.crop_size}', cat_max_ratio: 0.75}
+      - {type: PackSegInputs}
+  val:
+    ann_file: ImageSets/Segmentation/val.txt
+    pipeline:
+      - {type: LoadImageFromFile}
+      - {type: Resize, scale: [2048, 512], keep_ratio: true}
+      - {type: LoadAnnotations}
+      - {type: PackSegInputs}

@@ -1,0 +1,28 @@
+# IDD (India Driving Dataset, segmentation), in Cityscapes' 19 train ids. A
+# domain-shift TEST set for Cityscapes-trained models, never trained on. Sensaug's
+# IDDDataset was a stub; this reads IDD through CityscapesDataset instead. The label
+# PNGs come from IDD's toolkit, mapped to Cityscapes train ids:
+#   python preperation/createLabels.py --datadir <data_root> --id-type csTrainId
+#   <data_root>/leftImg8bit/val/<seq>/*_leftImg8bit.png
+#   <data_root>/gtFine/val/<seq>/*_gtFine_labelcsTrainIds.png
+# Check the suffix against what the toolkit wrote; it is the one guess in this file.
+name: idd
+kind: seg
+role: eval_only
+eval_for: cityscapes
+num_classes: 19
+data_root: ${cluster.data_root}/idd
+
+mmseg:
+  crop_size: [512, 1024]
+  dataset:
+    type: CityscapesDataset
+    img_suffix: _leftImg8bit.png
+    seg_map_suffix: _gtFine_labelcsTrainIds.png
+  val:
+    data_prefix: {img_path: leftImg8bit/val, seg_map_path: gtFine/val}
+    pipeline:
+      - {type: LoadImageFromFile}
+      - {type: Resize, scale: [2048, 1024], keep_ratio: true}
+      - {type: LoadAnnotations}
+      - {type: PackSegInputs}

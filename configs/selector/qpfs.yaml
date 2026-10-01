@@ -1,0 +1,7 @@
+# Hard: quadratic-programming feature selection (Rodriguez-Lujan et al. 2010), FISTA on
+# the simplex, top-k by x. Same budget rule as mrmr.
+name: qpfs
+lam: 0.25
+lambda_ramp: linear
+mode: squared
+alpha: null                # null: the paper's default, mean(Q) / (mean(Q) + mean(F))

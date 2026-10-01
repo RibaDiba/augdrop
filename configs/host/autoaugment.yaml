@@ -1,0 +1,10 @@
+# torchvision AutoAugment's ImageNet policy (the host's default policy). Fixed
+# vocabulary: the ops that policy applies. q tilts the 25 sub-policies. Probe-only: it
+# can't augment training yet.
+defaults:
+  - override /vocab@_global_.vocab: autoaugment_imagenet
+
+name: autoaugment
+probe_interval: ${probe.schedule.interval}
+probe_iters: ${probe.schedule.iters}
+control_iters: ${probe.schedule.control_iters}

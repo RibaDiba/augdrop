@@ -1,0 +1,22 @@
+# The SA loop's knobs (src/tasks/mmseg/loops.py: RobustValLoop, RobustIterBasedTrainLoop,
+# SubsetTestLoop). Read only when host=sensaug; with any other host they are ignored
+# (check() warns if they were changed). Defaults are Sensaug train.py's for `--aug-type
+# ours` / `grad_corr`; the flag each one was is noted. warmup_rounds is not here: it is
+# host.warmup_rounds, and the loop refuses a value that differs from the host's.
+
+ratio: 0.25              # fraction of val each (op, level) is scored on (val_cfg.ratio)
+test_ratio: 0.25         # SubsetTestLoop's fraction (test_cfg.ratio). Sensaug used one
+                         # eval_ratio for both (1.0 on ACDC, which is eval-only here)
+descending_MA: false     # --descending-MA: the lowest-mIoU level of an op gets the most mass
+uniform: false           # --uniform: a uniform pdf instead of the SA one
+weighted_augs: false     # --weighted-augs: sa.generate_pdf_new_weighted_aug
+remove_H: false          # --no-inv-aug: drop lighter_H / darker_H
+hold_none_prob: false    # --hold-none-prob: pruned ops stay in P(none)'s denominator
+pruned_augmentations: [] # --pruned-augmentations: ops out of the curve and every pdf all run
+num_levels: 5            # SA-curve search: levels per op (hard-coded in Sensaug)
+tolerance: 0.05          # SA-curve search tolerance (hard-coded in Sensaug)
+sa_curve_path: null      # a static curve {op: [levels]}, used by RobustBaselineValLoop only
+                         # (Sensaug passed sensaug/testing/test_levels_voc.json, which its
+                         # RobustValLoop asserted on but never read when searching)
+init_sa: false           # --no-warmup (or resume): one val round before training so an SA pdf
+                         # exists from the start. The host's pre_train_round follows it

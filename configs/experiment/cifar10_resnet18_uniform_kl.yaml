@@ -1,0 +1,13 @@
+# @package _global_
+# CIFAR-10, ResNet-18, uniform over the DIFF32 ops, Lever 3 (kl_reweight).
+defaults:
+  - override /task: cls_resnet18
+  - override /dataset: cifar10
+  - override /host: uniform
+  - override /selector: kl_reweight
+
+selector:
+  lam: 0.5
+probe:
+  batch_size: 64           # 32x32 images, one label size: batch for speed
+  n_probe: 2000

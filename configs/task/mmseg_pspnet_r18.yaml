@@ -1,0 +1,15 @@
+# PSPNet R18-D8 on mmseg. The model and optimizer are the mmengine config named
+# below; tasks/mmseg/config.py writes the dataset, host, probe hooks and these keys
+# into it.
+backend: mmseg
+backbone: pspnet                      # train.py --backbone finds a task by this
+config: mmseg_pspnet_r18.py        # relative to this directory
+max_iters: 80000
+batch_size: 2                              # per GPU; x4 GPUs = 4x2, the global batch of the source recipe
+num_workers: 4
+val_interval: ${idiv:${.max_iters},20}
+checkpoint_interval: ${.val_interval}
+amp: false
+# Any other mmengine key, dotted, as mmseg's --cfg-options:
+#   task.cfg_options={optim_wrapper.optimizer.lr:1.0e-4}
+cfg_options: {}

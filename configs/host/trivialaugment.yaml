@@ -1,0 +1,10 @@
+# torchvision TrivialAugmentWide's defaults. Fixed vocabulary (trivialaug_wide minus
+# Identity). Probe-only: it can't augment training yet.
+defaults:
+  - override /vocab@_global_.vocab: trivialaug_wide
+
+name: trivialaugment
+num_magnitude_bins: 31
+probe_interval: ${probe.schedule.interval}
+probe_iters: ${probe.schedule.iters}
+control_iters: ${probe.schedule.control_iters}

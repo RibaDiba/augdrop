@@ -1,0 +1,39 @@
+# The gradient probe: what it measures, on which images, when it fires during training,
+# and how G becomes R. scripts/probe.py reads the same keys post hoc.
+
+# A float is one STRENGTH in [0, 1] for every op (0 = identity, 1 = the far end of its
+# mag_range; on the DIFF32 ops it is the magnitude itself, and 0.5 is Sensaug's fixed
+# fallback). A mapping {op: magnitude} gives each op its own, in its own units.
+magnitude: 0.5
+# Which magnitude each op is probed at, once the SA loop has produced a pdf (host=sensaug;
+# every other host always uses `magnitude` above). Before the first SA round, and for
+# `fixed`, it falls back to `magnitude`. See sa/magnitudes.py.
+#   mode                 each op at its modal SA level, the same for every image (Sensaug's)
+#   sampled_shared       per image, drawn from each op's level distribution + N(0, 0.1)
+#                        jitter, the draw shared across ops
+#   sampled_independent  the same, drawn independently per op (attenuates R)
+#   fixed                `magnitude`, always
+magnitude_mode: mode
+n_probe: null              # images in the probe set; null sweeps the whole split
+probe_seed: 0              # picks the subset and pins each op's randomness (noise)
+batch_size: 1              # also the bootstrap's cluster; 1 stacks labels of mixed sizes
+fd_step: 0.05              # finite-difference step, a fraction of each op's mag_range
+num_workers: 0
+split: val                 # the clean split the probe set is drawn from
+
+# When the probe fires during training, for every host but sensaug (round grid).
+# `interval` and `iters` are two clocks; give one and set the other to null.
+schedule:
+  interval: ${idiv:${task.max_iters},8}    # 8 probes over the run
+  iters: null                              # explicit completed-iteration counts
+  control_iters: []                        # probes whose R is logged but never becomes q
+
+# G -> R (stats.analyze), and which R cells count as evidence for the selector.
+analysis:
+  n_min: 100               # below this many images R is skipped (SE ~ 0.10)
+  normalize_per_image: true
+  bootstrap: true
+  bootstrap_reps: 1000
+  bootstrap_seed: 0
+  fdr_alpha: 0.05
+  mask_within_op: true     # lighter_X/darker_X and X_pos/X_neg are one op, not a pair
