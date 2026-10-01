@@ -1,0 +1,9 @@
+[project]
+name = "dropaug"
+version = "0.0.0"
+requires-python = ">=3.10"
+dependencies = [
+    # configs/ and dropaug.config compose with Hydra
+    "hydra-core>=1.3",
+    "omegaconf>=2.3",
+]

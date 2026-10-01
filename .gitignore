@@ -1,0 +1,4 @@
+slurm/logs/*
+!slurm/logs/.gitkeep
+__pycache__/
+*.pyc
