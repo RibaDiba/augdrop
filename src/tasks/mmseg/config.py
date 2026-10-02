@@ -48,8 +48,9 @@ Left out of Sensaug's ``build_config``, and why:
   backbone (672-730): a dropaug task is one self-contained .py, written once per
   backbone (``configs/task/``)
 - ``--aug-type`` branches (legacy CPU transforms, AutoAugment / AugMix / VIP / IDBH,
-  ``random``, ``no_corr_sa``, geometric/photometric-only, perturbation_set, ``pruned_ops``):
-  the host and the vocab replace them (``pruned_augmentations`` still reaches the val loop)
+  ``random``, ``no_corr_sa``, geometric/photometric-only, perturbation_set): the host
+  and the vocab replace them. ``--pruned-augmentations`` is ``host.pruned_ops``: the
+  host drops those ops from its policy, and the val loop and the probe read them off it
 - ``GradCorrValLoop`` and the correlation hooks' gate (``fire_iters``, ``magnitudes_path``,
   ``skip_pruned``): the sensaug host owns the round grid and the loops publish R
 - ``--adamw``, ``--freeze-early-layers``, ``--max-iters`` and the ACDC branch (ACDC is
@@ -86,7 +87,6 @@ _SA_VAL_KEYS = (
     "descending_MA",
     "remove_H",
     "weighted_augs",
-    "pruned_augmentations",
     "hold_none_prob",
     "num_levels",
     "tolerance",

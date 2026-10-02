@@ -70,6 +70,8 @@ class CollectGradientCallback:
                  mmseg default of 1: class labels always stack, and a classifier's
                  backward is cheap.
     fd_step      finite-difference step for ops autograd can't differentiate
+
+    The host's ``pruned_ops()`` are not measured: NaN rows, logged as ``static_pruned``.
     """
 
     def __init__(
@@ -90,8 +92,11 @@ class CollectGradientCallback:
         self.backend = backend
         self.host = host
         self.ops = {name: get_op(name) for name in host.vocabulary()}
+        self.skip = tuple(host.pruned_ops())
         # Draw once now, so a bad magnitude fails at construction, not at the first probe.
-        self.magnitudes.draw(self.ops, 1, np.random.default_rng(0))
+        self.magnitudes.draw(
+            {n: op for n, op in self.ops.items() if n not in self.skip}, 1, np.random.default_rng(0)
+        )
         self.n_probe = n_probe
         self.probe_seed = probe_seed
         self.batch_size = batch_size
@@ -149,7 +154,8 @@ class CollectGradientCallback:
             fd_step=self.fd_step,
             num_workers=self.num_workers,
             log_path=self.log_path if _main() else None,
-            meta={"iter": iteration, "role": role},
+            meta={"iter": iteration, "role": role, "static_pruned": list(self.skip)},
+            skip=self.skip,
         )
 
 

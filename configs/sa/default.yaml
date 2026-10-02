@@ -11,8 +11,7 @@ descending_MA: false     # --descending-MA: the lowest-mIoU level of an op gets 
 uniform: false           # --uniform: a uniform pdf instead of the SA one
 weighted_augs: false     # --weighted-augs: sa.generate_pdf_new_weighted_aug
 remove_H: false          # --no-inv-aug: drop lighter_H / darker_H
-hold_none_prob: false    # --hold-none-prob: pruned ops stay in P(none)'s denominator
-pruned_augmentations: [] # --pruned-augmentations: ops out of the curve and every pdf all run
+hold_none_prob: false    # --hold-none-prob: host.pruned_ops stay in P(none)'s denominator
 num_levels: 5            # SA-curve search: levels per op (hard-coded in Sensaug)
 tolerance: 0.05          # SA-curve search tolerance (hard-coded in Sensaug)
 sa_curve_path: null      # a static curve {op: [levels]}, used by RobustBaselineValLoop only

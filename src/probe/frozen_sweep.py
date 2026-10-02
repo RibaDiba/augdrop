@@ -250,6 +250,7 @@ def sweep(
     num_workers: int = 0,
     log_path: Optional[str] = None,
     meta: Optional[dict] = None,
+    skip: Sequence[str] = (),
 ) -> Sweep:
     """One frozen-frame pass of ``adapter``'s model over ``probe_set``. Returns one G.
 
@@ -264,10 +265,21 @@ def sweep(
     ``batch_size`` is also the bootstrap's cluster size. Sensaug defaulted to 1
     (singleton clusters). Larger is faster, but activation memory scales with it,
     since the backward reaches the full-resolution input.
+
+    ``skip`` names ops of ``ops`` that are not measured at all: they keep their row,
+    as NaN, and are labelled ``"unprobed"`` (Sensaug's ``static_pruned_ops``, the
+    ops a run prunes from iteration 0). No magnitude is drawn for them.
     """
     if not ops:
         raise ValueError("no ops to probe")
     names = list(ops)
+    skip = frozenset(skip)
+    unknown = sorted(skip - set(names))
+    if unknown:
+        raise ValueError(f"skip names ops {unknown} that are not in ops")
+    probed = {name: op for name, op in ops.items() if name not in skip}
+    if not probed:
+        raise ValueError("every op is skipped; there is nothing to probe")
     result = Sweep(
         names=names,
         checkpoint=checkpoint,
@@ -275,7 +287,7 @@ def sweep(
         magnitude_source=magnitudes.source,
         magnitude_mode=magnitudes.mode,
         probe_seed=probe_seed,
-        methods={name: op_method(op) for name, op in ops.items()},
+        methods={name: UNPROBED if name in skip else op_method(op) for name, op in ops.items()},
         meta=dict(meta or {}),
     )
     loader = probe_set.loader(
@@ -296,7 +308,8 @@ def sweep(
         for k, (ids, batch) in enumerate(zip(probe_set.chunks(batch_size), loader, strict=True)):
             # Drawn before probing, so a failed batch still consumes its draw and the
             # later batches' magnitudes don't depend on which batches failed.
-            drawn = _draw(magnitudes, ops, len(ids), rng)
+            drawn = _draw(magnitudes, probed, len(ids), rng)
+            drawn.update({name: np.full(len(ids), np.nan) for name in skip})
             if batch_ids is not None and tuple(batch_ids(batch)) != tuple(ids):
                 raise ProbeError(
                     f"batch {k} holds {list(batch_ids(batch))[:3]}..., the probe set "
@@ -306,7 +319,7 @@ def sweep(
                 rows = collect_grads(
                     adapter,
                     batch,
-                    ops,
+                    probed,
                     drawn,
                     probe_seed=probe_seed,
                     fd_step=fd_step,
@@ -326,6 +339,7 @@ def sweep(
                 logger.warning("probe batch %d failed (checkpoint %s): %r", k, checkpoint, error)
                 continue
             checked = True
+            rows.update({name: np.full(len(ids), np.nan) for name in skip})
 
             result.image_ids.append(tuple(ids))
             for name in names:

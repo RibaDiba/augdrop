@@ -57,9 +57,10 @@ Sensaug's train.py flags that are not flags here, and what replaces each:
     --no-corr-sa                  host=uniform with a selector (no SA loop)
     --uniform / --weighted-augs / --no-inv-aug / --hold-none-prob
                                   sa.uniform / sa.weighted_augs / sa.remove_H / sa.hold_none_prob
-    --pruned-augmentations        sa.pruned_augmentations=[op,...]
+    --pruned-augmentations        host.pruned_ops=[op,...]   (sensaug and uniform hosts: out of
+                                  training from iteration 0, the SA curve and pdfs, and the probe)
     --random-prune-count/-method/-seed
-                                  selector=random_k selector.<key>=..., or sa.pruned_augmentations
+                                  selector=random_k selector.<key>=..., or host.pruned_ops
     --geometric-only / --photometric-only
                                   a vocab config (vocab=<name>); not ported
     --corr-lambda / --corr-lambda-ramp

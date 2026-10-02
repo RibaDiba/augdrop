@@ -16,3 +16,6 @@ corr_rounds: null          # explicit firing rounds instead of the derived ones
 control_rounds: null
 pre_train_round: ${sa.init_sa}   # follows sa.init_sa: the host and the train loop must agree
 probe_interval: null       # a fixed clock instead of the round grid (Sensaug's --corr-interval)
+pruned_ops: []             # ops removed for the whole run, from iteration 0 (Sensaug's
+                           # --pruned-augmentations): out of the warmup policy, the SA curve,
+                           # every pdf and the probe. e.g. host.pruned_ops=[blur,noise]

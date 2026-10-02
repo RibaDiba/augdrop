@@ -8,3 +8,5 @@ none_prob: null            # null: 1 / (A + 1)
 probe_interval: ${probe.schedule.interval}
 probe_iters: ${probe.schedule.iters}
 control_iters: ${probe.schedule.control_iters}
+pruned_ops: []             # ops removed for the whole run (Sensaug's --pruned-augmentations):
+                           # never drawn, and the probe skips them. e.g. host.pruned_ops=[blur,noise]

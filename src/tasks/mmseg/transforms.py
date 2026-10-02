@@ -33,7 +33,8 @@ one level to every image on the ``training=False`` path, labels moving with the
 geometric ops, until ``set_eval_none()``. Only the SA loop (``loops.py``) sets it. It is
 independent of ``augment``, so the control arm's SA still measures.
 
-Not ported: ``pruned_ops``. Exclude an op through the host's vocabulary or a zero in q.
+Sensaug's ``pruned_ops`` is the host's (``host.pruned_ops``): a pruned op has base
+probability 0 from iteration 0, so neither sampling path ever draws it.
 """
 
 import contextlib

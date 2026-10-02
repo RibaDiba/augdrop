@@ -58,6 +58,11 @@ Rules every host keeps. The no-op draw (Identity, `("none", 0)`) stays out of th
 vocabulary, and `set_weights` holds its `none_prob` fixed; AutoAugment is the one
 exception, since it has no no-op draw. q replaces the previous q rather than
 compounding it, so derive it from `base_probs()`. A non-finite q raises.
+`sensaug` and `uniform` take `pruned_ops` (config `host.pruned_ops=[op,...]`,
+Sensaug's `--pruned-augmentations`): those ops stay in the vocabulary, so R and q
+keep their axes, but get base probability 0 from iteration 0. P(none) in the
+warmup/uniform policy is then 1/(kept + 1), and a q that gives one weight raises.
+The SA loop reads them off the host (curve and every pdf), and the probe skips them.
 `tests/hosts/` pins the names against `vocab`, the torchvision op spaces and policy,
 and Sensaug's `round_schedule` and `redundancy.reweight`.
 
@@ -80,7 +85,7 @@ turning G into R is `src/stats/`. The package docstring
 | `probe_set.py` | `ProbeSet.build(ids, n, seed)`: a subset chosen from the sorted ids, so it doesn't depend on listing order. Its sha256 `digest` goes on every G |
 | `grad_collect.py` | `collect_grads(adapter, batch, ops, magnitudes)` → `{op: (B,)}`. Refuses train-mode modules, checks the label moved for geometric ops, pins each op's RNG by `(probe_seed, name)`. `check=True` (first batch of a sweep) also rejects a non-deterministic `to_unit` and any image coupling |
 | `finite_diff.py` | the step is a fraction of each op's `mag_range` width (default 0.05). Quantized ops such as Posterize need a larger per-op `fd_step` |
-| `frozen_sweep.py` | `sweep(...)` → one `Sweep` (one G, `.matrix()` → `(G, batch_ids)`), optionally appending `aug_gradient_log.txt`. `sweep_checkpoints` gives one G per checkpoint at identical magnitudes. `Magnitudes.fixed / .relative(strength) / custom draw` |
+| `frozen_sweep.py` | `sweep(...)` → one `Sweep` (one G, `.matrix()` → `(G, batch_ids)`), optionally appending `aug_gradient_log.txt`. `skip=` ops keep a NaN row, labelled `unprobed`, and are not measured (the hooks pass the host's `pruned_ops()`). `sweep_checkpoints` gives one G per checkpoint at identical magnitudes. `Magnitudes.fixed / .relative(strength) / custom draw` |
 | `magnitude_sweep.py` | e3: one G per reference. A float is a strength in [0, 1] (`strength_to_magnitude`: identity → far end of `mag_range`); a mapping is absolute per-op magnitudes |
 
 Differences from Sensaug to keep in mind when comparing numbers. The loss is per
@@ -109,7 +114,7 @@ and `logs.py` its log writers (neither has tests yet).
 | `redundancy.py` | `compute_red` → `RedundancyScore` (red(a), squared / abs / signed), `within_op_pairs`, `summarise` |
 | `diagnostics.py` | new: `diagnose(R, names, n_images)` → `Diagnostics`: effective rank, participation ratio, condition number, per-op VIF, Marchenko-Pastur edges and `n_signal` (eigenvalues above them). Reads only R's finite part |
 | `analyze.py` | `analyze(G, batch_ids, names)` / `analyze_sweep(sweep)` → `Analysis`: R_raw, R_scalenorm, loadings, bootstrap, `survives` (A×A), `withheld` (below `n_min`, or the >0.9 shared-factor alarm), `aliases`, `diagnostics`, and with `shrinkage=` `R_shrunk` (which then becomes `primary`) |
-| `logs.py` | `corr_matrix_log.json`, `corr_bootstrap_log.txt`, `corr_redundancy_log.txt` in Sensaug's record shapes (`stale` / `static_pruned` written empty; `unprobed`, `aliases`, `R_shrunk`, `shrinkage`, `diagnostics` and `fdr_method` added) |
+| `logs.py` | `corr_matrix_log.json`, `corr_bootstrap_log.txt`, `corr_redundancy_log.txt` in Sensaug's record shapes (`stale` written empty; `static_pruned` is the host's `pruned_ops()`, kept out of `unprobed`; `unprobed`, `aliases`, `R_shrunk`, `shrinkage`, `diagnostics` and `fdr_method` added) |
 
 Not ported: `merge_rank_buffers` (no DDP), `stack_probe_buffer` (`Sweep.matrix()` does
 this) and the TensorBoard panels. The functions themselves keep a Sensaug issue: a NaN
@@ -243,9 +248,7 @@ run. It also fixes Sensaug's resume: Sensaug's round counter was set before
 `load_or_resume`, so it was always 0. Checked on stand-ins for mmengine/mmseg/
 torchmetrics only, not on mmseg itself.
 
-Not ported: `pruned_ops` (exclude an op with the loop's `pruned_augmentations`, the
-host's vocabulary or a zero in q). The
-host's q is not saved in checkpoints, so a resumed run trains on the base distribution
+The host's q is not saved in checkpoints, so a resumed run trains on the base distribution
 until the next active probe (as in Sensaug). The torchvision geometric ops refuse a
 label whose size differs from the image's, which mmseg val pipelines produce on
 datasets whose val resize isn't the identity (not Cityscapes).

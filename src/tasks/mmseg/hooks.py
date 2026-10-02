@@ -108,7 +108,9 @@ class CollectGradientHook(Hook):
     split        the dataloader config the probe reads ("val" or "test")
 
     The probe set is saved to ``work_dir/probe_set.json`` and, on resume, reloaded and
-    checked against the dataset, so every G of one run is on the same images.
+    checked against the dataset, so every G of one run is on the same images. The
+    host's ``pruned_ops()`` are not measured: their rows of G are NaN, and the logs
+    list them as ``static_pruned`` (Sensaug's ``static_pruned_ops``).
     """
 
     priority = "NORMAL"
@@ -141,8 +143,11 @@ class CollectGradientHook(Hook):
     def before_run(self, runner) -> None:
         self.host = host_of(runner)
         self.ops = {name: get_op(name) for name in self.host.vocabulary()}
+        self.skip = tuple(self.host.pruned_ops())
         # Draw once now, so a bad magnitude fails at startup and not at the first probe.
-        self.magnitudes.draw(self.ops, 1, np.random.default_rng(0))
+        self.magnitudes.draw(
+            {n: op for n, op in self.ops.items() if n not in self.skip}, 1, np.random.default_rng(0)
+        )
 
         self.backend = MMSegBackend.from_runner(runner, split=self.split)
         self.data = self.backend.probe_data()
@@ -170,6 +175,8 @@ class CollectGradientHook(Hook):
                 logger="current",
                 level=30,
             )
+        if self.skip:
+            print_log(f"[probe] pruned for this run, not measured (NaN rows): {list(self.skip)}", logger="current")
         print_log(
             f"[probe] {len(self.ops)} ops, probe set {self.probe_set.digest[:12]} "
             f"({len(self.probe_set)} images of {self.data.source}), magnitudes "
@@ -202,7 +209,8 @@ class CollectGradientHook(Hook):
             fd_step=self.fd_step,
             num_workers=self.num_workers,
             log_path=self.log_path if is_main_process() else None,
-            meta={"iter": iteration, "role": role},
+            meta={"iter": iteration, "role": role, "static_pruned": list(self.skip)},
+            skip=self.skip,
         )
 
 

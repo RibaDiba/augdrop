@@ -22,6 +22,11 @@ ops plus "none", with the magnitude uniform on [0, 1]. ``pdf()`` returns None th
 and ``set_weights`` raises, because Sensaug never reweights the warmup policy.
 The one probe that fires during warmup is the control, whose R must not reach
 the pdf anyway.
+
+``pruned_ops`` is Sensaug's ``--pruned-augmentations``: those ops are out of the
+warmup policy from iteration 0 (P(none) is 1/(kept + 1) there), and the SA loop
+reads them from here to keep them out of the curve and every pdf. ``set_sa_pdf``
+refuses a pdf that has one.
 """
 
 import math
@@ -139,6 +144,7 @@ class SensAugHost(AugHost):
         pre_train_round: bool = False,
         probe_interval: Optional[int] = None,
         vocabulary: Sequence[str] = DIFF32_OPS,
+        pruned_ops: Sequence[str] = (),
     ):
         if round_interval is None:
             round_interval = max_iters // n_rounds
@@ -162,14 +168,18 @@ class SensAugHost(AugHost):
         self._sa_pdf: Optional[Pdf] = None
         self._tilt: Optional[np.ndarray] = None
 
+        # The warmup policy is uniform over the kept ops plus "none" (Sensaug's
+        # _op_bank drops the pruned ops before adding NO_OP).
         n = len(vocabulary)
+        n_kept = n - len(set(pruned_ops) & set(vocabulary))
         super().__init__(
             vocabulary,
             np.full(n, 1.0 / n) if n else np.zeros(0),
-            none_prob=1.0 / (n + 1),
+            none_prob=1.0 / (n_kept + 1),
             probe_interval=probe_interval,
             probe_iters=probe_iters,
             control_iters=control_iters,
+            pruned_ops=pruned_ops,
         )
 
     def _resolve_rounds(self, corr_rounds, controls, cadence, pre_train_round):
@@ -241,6 +251,11 @@ class SensAugHost(AugHost):
             op = key[0]
             if op not in index:
                 raise KeyError(f"pdf op {op!r} is not in this host's vocabulary")
+            if op in self._pruned:
+                raise ValueError(
+                    f"pdf op {op!r} is pruned for this run; the SA loop must leave it out "
+                    f"of the curve and every pdf"
+                )
             mass[index[op]] += value
         total = none + float(mass.sum())
         if abs(total - 1.0) > _PDF_SUM_TOL:

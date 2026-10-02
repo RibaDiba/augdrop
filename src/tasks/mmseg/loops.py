@@ -29,7 +29,8 @@ What Sensaug's train.py set for ``--aug-type ours`` / ``grad_corr``::
                      init_sa=False)          # True on resume or --no-warmup
     val_cfg = dict(type="RobustValLoop", ratio=0.25, warmup_rounds=4,  # the host's
                    descending_MA=..., remove_H=..., uniform=..., weighted_augs=...,
-                   pruned_augmentations=[...], hold_none_prob=...)
+                   hold_none_prob=...)
+    # --pruned-augmentations is the host's pruned_ops; the loop reads it off the host
     test_cfg = dict(type="SubsetTestLoop", ratio=0.25)
     test_evaluator = val_evaluator
     # and model.data_preprocessor = GpuAugSegDataPreProcessor with host=dict(type="sensaug")
@@ -60,7 +61,7 @@ import json
 import math
 import os
 from pprint import pprint
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, List, Optional
 
 import torch
 from mmengine.device import get_device
@@ -111,10 +112,13 @@ class RobustValLoop(ValLoop):
     warmup_rounds         rounds before the first SA pdf; must equal the host's
     uniform               ``sa.generate_uniform_pdf`` instead (``--uniform``)
     weighted_augs         ``sa.generate_pdf_new_weighted_aug`` instead (``--weighted-augs``)
-    pruned_augmentations  ops kept out of the curve and every pdf for the whole run
-    hold_none_prob        count those ops in P(none)'s denominator (``--hold-none-prob``)
+    hold_none_prob        count the host's pruned ops in P(none)'s denominator
+                          (``--hold-none-prob``)
     num_levels, tolerance the curve search's (Sensaug hard-coded 5 and 0.05)
     sa_curve_path         unused here; RobustBaselineValLoop's static curve
+
+    The ops kept out of the curve and every pdf for the whole run (Sensaug's
+    ``pruned_augmentations``) are the host's ``pruned_ops()``, read at the first round.
     """
 
     #: ApplyWeightsHook reads this: with an SA host, Lever 3 waits for reweight().
@@ -132,7 +136,6 @@ class RobustValLoop(ValLoop):
         remove_H: bool = False,
         warmup_rounds: int = 4,
         weighted_augs: bool = False,
-        pruned_augmentations: Optional[Sequence[str]] = None,
         hold_none_prob: bool = False,
         num_levels: int = 5,
         tolerance: float = 0.05,
@@ -146,7 +149,7 @@ class RobustValLoop(ValLoop):
         self.remove_H = remove_H
         self.warmup_rounds = int(warmup_rounds)
         self.weighted_augs = weighted_augs
-        self.pruned_augmentations = list(pruned_augmentations or [])
+        self.pruned_augmentations: List[str] = []  # the host's pruned_ops, set at the first run()
         self.hold_none_prob = hold_none_prob
         self.num_levels = num_levels
         self.tolerance = tolerance
@@ -190,10 +193,7 @@ class RobustValLoop(ValLoop):
                     + "; ".join(mismatched)
                     + "), so probes would not land on the SA rounds that read them"
                 )
-            vocabulary = set(self.host.vocabulary())
-            unknown = sorted(set(self.pruned_augmentations) - vocabulary)
-            if unknown:
-                raise ValueError(f"pruned_augmentations {unknown} are not in the host's vocabulary")
+            self.pruned_augmentations = list(self.host.pruned_ops())
             removed = set(self._remove_H_names) if self.remove_H else set()
             # What --hold-none-prob counts: ops the static prune removed that would
             # otherwise have reached the pdf.
@@ -203,7 +203,8 @@ class RobustValLoop(ValLoop):
             print(
                 f"Starting from round {self.n_rounds}; Uniform sampling: {self.uniform}; "
                 f"Descending MA: {self.descending_MA}; Remove color augs: {self.remove_H}; "
-                f"Warmup rounds: {self.warmup_rounds}; SA host: {self.host is not None}"
+                f"Warmup rounds: {self.warmup_rounds}; SA host: {self.host is not None}; "
+                f"Pruned: {self.pruned_augmentations or 'none'}"
             )
 
     # --- one round --------------------------------------------------------------------

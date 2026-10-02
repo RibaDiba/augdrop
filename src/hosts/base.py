@@ -22,6 +22,11 @@ Two conventions every host shares:
 - **q replaces, it does not compound.** Derive q from ``base_probs()`` (the
   method's own distribution), not from ``sampling_probs()``. Otherwise each probe
   tilts the previous tilt.
+
+A host can also prune ops for the whole run (``pruned_ops``, Sensaug's
+``--pruned-augmentations``). A pruned op stays in the vocabulary, so R and q keep
+their axes, but its base probability is 0 from the first iteration and no q may
+bring it back.
 """
 
 from collections.abc import Mapping
@@ -87,6 +92,7 @@ class AugHost:
         probe_interval: Optional[int] = None,
         probe_iters: Optional[Iterable[int]] = None,
         control_iters: Iterable[int] = (),
+        pruned_ops: Iterable[str] = (),
     ):
         names = tuple(str(n) for n in vocabulary)
         if not names:
@@ -98,8 +104,17 @@ class AugHost:
             raise ValueError(f"none_prob must be in [0, 1), got {none_prob}")
 
         self._names = names
+        self._pruned = self._check_pruned(pruned_ops)
         self._none_prob = float(none_prob)
         self._base = self._as_distribution(base_probs)
+        if self._pruned:
+            self._base[[names.index(n) for n in self._pruned]] = 0.0
+            if self._base.sum() <= 0:
+                raise ValueError(
+                    f"{type(self).__name__}: pruning {list(self._pruned)} leaves no op with "
+                    f"base probability"
+                )
+            self._base /= self._base.sum()
         self._probs = self._base.copy()
 
         self._probe_interval, iters = resolve_gate(probe_interval, probe_iters)
@@ -118,6 +133,11 @@ class AugHost:
         """The ops this method samples between, in a fixed order. R's rows and
         columns and every q vector are indexed by this order."""
         return self._names
+
+    def pruned_ops(self) -> Tuple[str, ...]:
+        """The ops removed for the whole run, in vocabulary order. They keep their
+        place in ``vocabulary()``, are never drawn, and the probe gives them NaN rows."""
+        return self._pruned
 
     @property
     def none_prob(self) -> float:
@@ -152,8 +172,16 @@ class AugHost:
         A non-finite q raises instead of being coerced. Missing data upstream is
         NaN on purpose, and it has to be resolved into a weight (typically "leave
         it at its base probability") by the caller who knows why it is missing.
+        So does a q that gives weight to a pruned op.
         """
-        self._probs = self._apply_weights(self._as_distribution(q))
+        q = self._as_distribution(q)
+        revived = [n for n, v in zip(self._names, q) if v > 0 and n in self._pruned]
+        if revived:
+            raise ValueError(
+                f"{type(self).__name__}: q gives weight to {revived}, which this run prunes; "
+                f"derive q from base_probs(), where they are 0"
+            )
+        self._probs = self._apply_weights(q)
 
     def _apply_weights(self, q: np.ndarray) -> np.ndarray:
         """Turn a validated, normalized q into the distribution actually sampled.
@@ -184,6 +212,25 @@ class AugHost:
         return "control" if iteration in self._control_iters else "active"
 
     # --- helpers ---------------------------------------------------------------
+
+    def _check_pruned(self, pruned_ops: Iterable[str]) -> Tuple[str, ...]:
+        """``pruned_ops`` validated against the vocabulary, in vocabulary order."""
+        if isinstance(pruned_ops, str):
+            # Iterating it would prune its letters.
+            raise ValueError(
+                f"{type(self).__name__}: pruned_ops must be a list of op names, got the string "
+                f"{pruned_ops!r}; write host.pruned_ops=[{pruned_ops}]"
+            )
+        pruned = {str(n) for n in pruned_ops}
+        unknown = sorted(pruned - set(self._names))
+        if unknown:
+            raise ValueError(
+                f"{type(self).__name__}: pruned_ops {unknown} are not in the vocabulary "
+                f"{list(self._names)}"
+            )
+        if pruned == set(self._names):
+            raise ValueError(f"{type(self).__name__}: pruned_ops removes every op of the vocabulary")
+        return tuple(n for n in self._names if n in pruned)
 
     def _as_distribution(self, q: Weights) -> np.ndarray:
         """q as a float64 vector aligned to the vocabulary, validated and summing to 1."""
