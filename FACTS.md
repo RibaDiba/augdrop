@@ -41,8 +41,8 @@ None yet. No probe, R or eval has been run on real data through dropaug.
 | I2 | Raw red(a) row sums across logged matrices: spread of means / of SDs | means −0.71 to +4.08, SDs 0.24 to 3.69 | `sensaug/redundancy.py:21-23` | "the four logged corr_matrix_log.json files", which aren't identified |
 | I3 | Max/min q spread of the KL tilt at λ=0.25 | 2.3–3.1× at every checkpoint | `sensaug/redundancy.py:25-27` | same four files, 14- and 32-op vocabularies |
 | I4 | Largest pixel change at magnitude 0.5 | `blur` 78/255, `noise` 251/255 | `sensaug/hooks/grad_hook.py:16`, `:274` | measured on "a random image"; Sensaug's implementations |
-| I5 | SegFormer mit-b0 / Cityscapes / 160k, clean mIoU | random 75.47; grad_corr (none) 75.26; ours (SensAug) 74.89; grad_corr (soft, λ=0) 74.67 | `RESULTS_SUMMARY.md` (2026-08-24) | One seed each. Every grad_corr run had λ=0, so Lever 3 never fired. The random baseline went through a plain `ValLoop` (aAcc 95.81 vs ~94.7), so it isn't comparable as-is. |
-| I6 | Same runs, mean perturbed mIoU over the 32 ops | grad_corr (none) 70.31; ours 68.96; grad_corr (soft, λ=0) 69.11; random n/a | `RESULTS_SUMMARY.md` | as I5. Ours' corruption sweep never finished. |
+| I5 | SegFormer mit-b0 / Cityscapes / 160k, clean mIoU | random 75.47; grad_corr (none) 75.26; sensaug 74.89; grad_corr (soft, λ=0) 74.67 | `RESULTS_SUMMARY.md` (2026-08-24), where sensaug is labelled `ours` (`--aug-type ours`) | One seed each. Every grad_corr run had λ=0, so Lever 3 never fired. The random baseline went through a plain `ValLoop` (aAcc 95.81 vs ~94.7), so it isn't comparable as-is. |
+| I6 | Same runs, mean perturbed mIoU over the 32 ops | grad_corr (none) 70.31; sensaug 68.96; grad_corr (soft, λ=0) 69.11; random n/a | `RESULTS_SUMMARY.md` | as I5. The sensaug run's corruption sweep never finished. |
 
 ## Derived (formulas)
 

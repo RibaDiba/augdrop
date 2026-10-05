@@ -19,10 +19,10 @@ The perturbation goes through the preprocessor's eval slot
 (``GpuAugSegDataPreProcessor.set_eval``), as on Sensaug's diff32 path. The pdf goes to
 ``host.set_sa_pdf``. Lever 3 is ApplyWeightsHook's ``reweight``, called right after;
 in Sensaug it was GradCorrValLoop's ``_apply_redundancy_reweighting``. Both arms use
-this one loop: without an ApplyWeightsHook (Sensaug's ``ours``) the pdf trains as
+this one loop: without an ApplyWeightsHook (plain sensaug) the pdf trains as
 generated.
 
-What Sensaug's train.py set for ``--aug-type ours`` / ``grad_corr``::
+What Sensaug's train.py set for sensaug (its ``--aug-type ours``) / ``grad_corr``::
 
     train_cfg = dict(type="RobustIterBasedTrainLoop", max_iters=M,
                      val_interval=M // 20,   # the host's round_interval

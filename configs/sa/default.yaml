@@ -1,8 +1,8 @@
 # The SA loop's knobs (src/tasks/mmseg/loops.py: RobustValLoop, RobustIterBasedTrainLoop,
 # SubsetTestLoop). Read only when host=sensaug; with any other host they are ignored
-# (check() warns if they were changed). Defaults are Sensaug train.py's for `--aug-type
-# ours` / `grad_corr`; the flag each one was is noted. warmup_rounds is not here: it is
-# host.warmup_rounds, and the loop refuses a value that differs from the host's.
+# (check() warns if they were changed). Defaults are Sensaug train.py's for sensaug (its
+# `--aug-type ours`) / `grad_corr`; the flag each one was is noted. warmup_rounds is not
+# here: it is host.warmup_rounds, and the loop refuses a value that differs from the host's.
 
 ratio: 0.25              # fraction of val each (op, level) is scored on (val_cfg.ratio)
 test_ratio: 0.25         # SubsetTestLoop's fraction (test_cfg.ratio). Sensaug used one
