@@ -225,8 +225,9 @@ class SensAugHost(AugHost):
         Ops absent from the pdf (e.g. ``lighter_H``/``darker_H`` under
         ``--no-inv-aug``) get base probability 0. A q already set stays in effect.
         It is kept as a ratio to the base it was set against and re-applied to
-        the new base, the same way Sensaug re-applies the currently published
-        ``red(a)`` to every pdf it generates until a new R replaces it.
+        the new base. The SA loop doesn't rely on that: Sensaug re-ran the
+        down-weighting on every fresh pdf, so ApplyWeightsHook.reweight follows
+        this call with either a new q or ``clear_weights()``.
         """
         index = {n: i for i, n in enumerate(self._names)}
         mass = np.zeros(len(self._names))
@@ -284,6 +285,15 @@ class SensAugHost(AugHost):
             key: (value if tuple(key) == NONE_KEY else float(value) * float(scale[index[key[0]]]))
             for key, value in self._sa_pdf.items()
         }
+
+    def clear_weights(self) -> None:
+        """Drop q, so ``pdf()`` is the SA pdf as generated again (bit-identical).
+
+        What a Sensaug round does when there is no R to reweight by, or the method
+        declines: the fresh pdf trains as generated. ``set_sa_pdf`` alone would
+        carry the last q over to it instead."""
+        self._tilt = None
+        self._probs = self._base.copy()
 
     def _apply_weights(self, q: np.ndarray) -> np.ndarray:
         if self._sa_pdf is None:

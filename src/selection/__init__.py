@@ -38,7 +38,7 @@ from .base import (
     pairwise,
     ramp_lambda,
 )
-from .decide import decide, redundancy_of
+from .decide import CLEAR, KEEP, PUBLISH, decide, publication, redundancy_of
 from .dpp import DPP
 from .kl_reweight import KLReweight, measured_red, reweight
 from .mrmr import MRMR
@@ -47,13 +47,16 @@ from .random_k import RandomK, null_band
 from .relevance_only import RelevanceOnly
 
 __all__ = [
+    "CLEAR",
     "DPP",
     "Decline",
     "HARD_SELECTORS",
     "HardSelector",
+    "KEEP",
     "KLReweight",
     "MODES",
     "MRMR",
+    "PUBLISH",
     "QPFS",
     "RandomK",
     "Redundancy",
@@ -67,6 +70,7 @@ __all__ = [
     "measured_red",
     "null_band",
     "pairwise",
+    "publication",
     "ramp_lambda",
     "redundancy_of",
     "reweight",

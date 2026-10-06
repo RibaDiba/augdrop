@@ -52,7 +52,7 @@ from mmengine.registry import HOOKS
 import probe
 import sa
 import stats
-from selection import Redundancy, build_selector, measured_red, ramp_lambda
+from selection import CLEAR, KEEP, Redundancy, build_selector, measured_red, publication, ramp_lambda
 from vocab import get_op
 
 from .backend import MMSegBackend, unwrap
@@ -239,6 +239,9 @@ class ApplyWeightsHook(Hook):
         self.selector_name = selector.pop("type")
         self.lam = float(selector.pop("lam", 0.0))
         self.selector_kwargs = selector
+        # How red(a) is scored for the publication rule: the selector's own mode, as
+        # Sensaug's --corr-red-mode set both. Selectors without one use Sensaug's default.
+        self.mode = selector.get("mode", "squared")
         # Fail at startup on an unknown selector or a bad kwarg, not hours in.
         build_selector(self.selector_name, lam=self.lam, **self.selector_kwargs)
         ramp_lambda(self.lam, 0.0, lambda_ramp)
@@ -267,8 +270,9 @@ class ApplyWeightsHook(Hook):
         self.sa_driven = bool(getattr(runner._val_loop, "applies_lever3", False)) and hasattr(
             self.host, "set_sa_pdf"
         )
-        # The last active, non-withheld analysis: what every SA round re-applies until
-        # a new R replaces it (a withheld or control R leaves it in place, as in Sensaug).
+        # The R every SA round re-applies until an emission replaces or clears it
+        # (selection.publication: a control or skipped R leaves it in place, a withheld
+        # or unusable one clears it, as in Sensaug).
         self.published = None
 
     def after_train_iter(self, runner, batch_idx, data_batch=None, outputs=None) -> None:
@@ -284,6 +288,14 @@ class ApplyWeightsHook(Hook):
             stats.write_analysis(runner.work_dir, analysis)
             print_log(f"[grad-corr] iter {iteration} ({role}): {analysis.summary()}", logger="current")
 
+        # Sensaug's publication rule (selection.publication). Rank 0's decision, so every
+        # rank holds the same R and reaches reweight()'s broadcast together: each rank
+        # analysed its own sweep, and the alarm can fall either side of 0.9 in float noise.
+        decision = [
+            publication(analysis, role=role, mode=self.mode, mask_within_op=self.mask_within_op)
+        ]
+        broadcast_object_list(decision, src=0)
+        action, reason = decision[0]
         if role != "active":
             print_log(
                 f"[grad-corr] control probe at iter {iteration}: R logged as the baseline, "
@@ -291,12 +303,22 @@ class ApplyWeightsHook(Hook):
                 logger="current",
             )
             return
-        if analysis.withheld is not None:
+        if action == KEEP:
             print_log(
-                f"[grad-corr] q withheld, host left as it was: {analysis.withheld}",
+                f"[grad-corr] {reason}; the R published last stays in effect",
                 logger="current",
                 level=30,
             )
+            return
+        if action == CLEAR:
+            if self.sa_driven:
+                # Sensaug set runner.corr_redundancy = None here: every SA round trains
+                # on its pdf as generated until a usable R is published.
+                self.published = None
+                message = "every SA round trains on its pdf as generated until a usable R"
+            else:
+                message = "host left as it was"
+            print_log(f"[grad-corr] q withheld, {message}: {reason}", logger="current", level=30)
             return
 
         self.published = analysis
@@ -318,11 +340,23 @@ class ApplyWeightsHook(Hook):
     def reweight(self, runner) -> None:
         """Lever 3 on the pdf the SA loop just installed, at the current lambda: the
         latest published R, re-selected against the host's new base. Sensaug's
-        ``GradCorrValLoop._apply_redundancy_reweighting``. No published R yet: the pdf
-        trains as generated."""
+        ``GradCorrValLoop._apply_redundancy_reweighting``. With no published R, or a
+        selector that declines, the pdf trains as generated (the host's q is cleared,
+        not carried over from the last round)."""
         if self.published is None:
+            self.host.clear_weights()
             return
-        self._apply(runner, self.published, runner.iter, f"SA round at iter {runner.iter}", record=False)
+        # runner.iter + 1: Sensaug's training_progress, (runner.iter + 1) / max_iters,
+        # which GradCorrValLoop called from the val loop, where runner.iter is already
+        # the completed count. The lambda is one iteration's ramp past the round's.
+        self._apply(
+            runner,
+            self.published,
+            runner.iter + 1,
+            f"SA round at iter {runner.iter}",
+            record=False,
+            clear_on_decline=True,
+        )
 
     def _select(self, runner, analysis, iteration):
         lam = ramp_lambda(self.lam, _progress(runner, iteration), self.lambda_ramp)
@@ -339,7 +373,9 @@ class ApplyWeightsHook(Hook):
             mask_within_op=self.mask_within_op,
         )
 
-    def _apply(self, runner, analysis, iteration: int, when: str, *, record: bool) -> None:
+    def _apply(
+        self, runner, analysis, iteration: int, when: str, *, record: bool, clear_on_decline: bool = False
+    ) -> None:
         selected, lam = self._select(runner, analysis, iteration)
         # Every rank installs rank 0's decision, bit for bit.
         decision = [(selected.applied, selected.reason, selected.q)]
@@ -352,6 +388,8 @@ class ApplyWeightsHook(Hook):
             except (RuntimeError, ValueError) as error:
                 # Declined, not raised: this runs mid-training on every rank.
                 applied, reason = False, f"host refused q: {error}"
+        if not applied and clear_on_decline:
+            self.host.clear_weights()
 
         if not is_main_process():
             return
@@ -376,7 +414,7 @@ class ApplyWeightsHook(Hook):
             )
 
     def _log_record(self, runner, analysis, lam, *, applied, reason, q=None, pruned=()) -> None:
-        score = measured_red(self._redundancy(analysis), self.selector_kwargs.get("mode", "squared"))
+        score = measured_red(self._redundancy(analysis), self.mode)
         stats.append_jsonl(
             os.path.join(runner.work_dir, stats.REDUNDANCY_LOG),
             stats.redundancy_record(
