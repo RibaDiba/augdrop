@@ -26,6 +26,9 @@ order, and the positional ``overrides`` come after them, so they win:
     --no-warmup             sa.init_sa=true, and host.warmup_rounds=0 where the host has
                             one (Sensaug's flag: one val round before training; the host's
                             pre_train_round follows sa.init_sa)
+    --no-inv-aug            sa.remove_H=true   (Sensaug's flag: lighter_H / darker_H stay
+                            out of the SA curve and every pdf; still probed, and still in
+                            the warmup policy, as in Sensaug)
 
 Both ``--flag value`` and ``--flag=value`` work.
 
@@ -55,8 +58,8 @@ Sensaug's train.py flags that are not flags here, and what replaces each:
     --aug-type                    host=<sensaug|uniform|randaugment|...>; augment=false trains clean
     --random-aug                  host=uniform
     --no-corr-sa                  host=uniform with a selector (no SA loop)
-    --uniform / --weighted-augs / --no-inv-aug / --hold-none-prob
-                                  sa.uniform / sa.weighted_augs / sa.remove_H / sa.hold_none_prob
+    --uniform / --weighted-augs / --hold-none-prob
+                                  sa.uniform / sa.weighted_augs / sa.hold_none_prob
     --pruned-augmentations        sa.pruned_augmentations=[op,...]
     --random-prune-count/-method/-seed
                                   selector=random_k selector.<key>=..., or sa.pruned_augmentations
@@ -124,6 +127,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="sa.descending_MA=true (sensaug host): the most training mass goes on each op's most damaging level",
     )
     p.add_argument("--no-warmup", action="store_true", help="sa.init_sa=true (and host.warmup_rounds=0 where the host has one)")
+    p.add_argument(
+        "--no-inv-aug",
+        dest="no_inv_aug",
+        action="store_true",
+        help="sa.remove_H=true (sensaug host): lighter_H / darker_H stay out of the SA curve and the pdf",
+    )
     p.add_argument("--dry-run", action="store_true", help="compose, check and write dropaug.yaml, then exit")
     p.add_argument("overrides", nargs="*", help="Hydra overrides, applied after the flags")
     return p
@@ -177,6 +186,8 @@ def flag_overrides(args, config_dir: str):
         out.append("sa.descending_MA=true")
     if args.no_warmup:
         out.append("sa.init_sa=true")
+    if args.no_inv_aug:
+        out.append("sa.remove_H=true")
     return out
 
 

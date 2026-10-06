@@ -47,7 +47,7 @@ set -o pipefail
 # Other env:
 #   MAX_PARALLEL=8                --submit's array throttle (%K)
 #   EXTRA_SBATCH_ARGS="..."       forwarded to sbatch by --submit
-#   everything train.sbatch reads (LAM, CLUSTER, DESCENDING_MA, WORK_DIR, RUN_TAG,
+#   everything train.sbatch reads (LAM, CLUSTER, DESCENDING_MA, INV_AUG, WORK_DIR, RUN_TAG,
 #   TRAIN_ARGS, ALLOW_RESUME, EVAL, ...) passes through to every task
 #
 # --submit exports the grid it listed, so every task decodes its index against

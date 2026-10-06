@@ -65,9 +65,15 @@ set -o pipefail
 #   RUN_TAG                         suffix for a repeat of the same config
 #   TRAIN_ARGS="..."                extra train.py flags and Hydra overrides, word-split,
 #                                   e.g. "task.max_iters=400 sa.ratio=0.02"
-#   DESCENDING_MA=1                 train.py --descending-MA (Sensaug's flag): the most
-#                                   training mass goes on each op's most damaging level
-#                                   (see src/sa/pdf.py)
+#   DESCENDING_MA=1  INV_AUG=0      host sensaug only. Sensaug's train_nexus_gamma.sbatch
+#                                   passed --descending-MA --no-inv-aug on every run, so they
+#                                   are on here too: the most training mass goes on each op's
+#                                   most damaging level (src/sa/pdf.py), and lighter_H /
+#                                   darker_H stay out of the SA curve and the pdf.
+#                                   DESCENDING_MA=0 / INV_AUG=1 turn them off. (Its
+#                                   --auto-scale-lr is not needed: the builder enables
+#                                   auto_scale_lr wherever the task has a base_batch_size, as
+#                                   Sensaug's build_config did whatever the flag said.)
 #   ALLOW_RESUME=1                  continue a run that already has a checkpoint
 #                                   (passes --resume)
 #   EVAL=0                          don't queue slurm/eval.sbatch afterwards
@@ -80,7 +86,8 @@ set -o pipefail
 # The train.py interface this relies on:
 #   [--cluster NAME] [--backbone NAME] [--dataset NAME] [--host NAME] [--selector NAME]
 #   [--lam F] [--seed N] [--work-dir DIR (the run directory itself)]
-#   [--launcher none|pytorch] [--resume] [--descending-MA] [--dry-run] [overrides ...]
+#   [--launcher none|pytorch] [--resume] [--descending-MA] [--no-inv-aug] [--dry-run]
+#   [overrides ...]
 # ==========================================================================
 
 # `${1-default}`, not `${1:-default}`: an explicitly empty argument is then
@@ -165,7 +172,10 @@ TRAIN_FLAGS=(
     --seed "${SEED}"
     --work-dir "${EXP_DIR}"
 )
-[ -n "${DESCENDING_MA:-}" ] && [ "${DESCENDING_MA}" != "0" ] && TRAIN_FLAGS+=(--descending-MA)
+if [ "${HOST}" = "sensaug" ]; then
+    [ "${DESCENDING_MA:-1}" != "0" ] && TRAIN_FLAGS+=(--descending-MA)
+    [ "${INV_AUG:-0}" = "0" ] && TRAIN_FLAGS+=(--no-inv-aug)
+fi
 # Continue only a run that has something to continue; ALLOW_RESUME on a fresh
 # directory is just a fresh start.
 if [ -n "${ALLOW_RESUME:-}" ] && [ -f "${EXP_DIR}/last_checkpoint" ]; then
