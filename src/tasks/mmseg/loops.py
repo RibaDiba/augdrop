@@ -50,6 +50,15 @@ Changed from Sensaug:
   warmup.
 - The curve is also searched when there is none yet (a resume between curve rounds),
   rather than training on the warmup policy until the next one.
+- The eval slot is cleared before every clean evaluation. Sensaug's never was: its
+  reset, ``apply_perturbations_dataloader(runner, train=False, perturb_levels={})``,
+  passes no ``perturbation_set``, so it takes the CPU branch, rebuilds the val/test
+  dataloaders, and leaves ``GpuAugSegDataPreProcessor``'s eval spec set. From the first
+  SA round on, the round's "clean" val (the mIoU logged, and the one
+  ``save_best="mIoU"`` picks the best checkpoint by) ran with the last op scored still
+  applied: the last op of DIFF32 order the curve kept (``color_neg`` unless pruned) at
+  its highest curve level. So did the curve search's ``miou_base`` at every curve round
+  after the first (rounds 10 and 16 of 20), which moves those curves' levels.
 - Not ported: ``perturbation_set`` (the host's vocabulary is the op set; only the GPU
   path exists), ``random_aug`` / ``geometric_only`` / ``photometric_only`` (the
   uniform host), ``corr_skip_pruned_eval`` (Sensaug's train.py rejected it), and the

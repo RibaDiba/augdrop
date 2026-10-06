@@ -240,12 +240,17 @@ ImageFolder, but never with timm (not in `sensAug`).
 `loops.py` keeps two Sensaug behaviours on purpose. `descending_MA` is unchanged. KID
 reads `data_batch["inputs"]`, but the eval slot applies the op later, in the
 preprocessor, so KID compares the clean subset with itself, as in every Sensaug diff32
-run. It also fixes Sensaug's resume: Sensaug's round counter was set before
-`load_or_resume`, so it was always 0. Checked on stand-ins for mmengine/mmseg/
-torchmetrics only, not on mmseg itself.
+run. It fixes two Sensaug bugs. The resume: Sensaug's round counter was set before
+`load_or_resume`, so it was always 0. And the eval slot: Sensaug never cleared it
+before a clean evaluation (its reset took the CPU branch), so from the first SA round
+its "clean" val mIoU, the `save_best` checkpoint and the curve's `miou_base` at rounds
+10 and 16 ran with the last op scored (`color_neg` at its top level) still applied.
+Checked on stand-ins for mmengine/mmseg/torchmetrics only, not on mmseg itself.
 
 Not ported: `pruned_ops` (exclude an op with the loop's `pruned_augmentations`, the
-host's vocabulary or a zero in q). The
+host's vocabulary or a zero in q). So `sa.pruned_augmentations` keeps an op out of the
+curve and every pdf, as Sensaug's `--pruned-augmentations` did, but not out of the
+warmup policy or the probe (Sensaug's gave it an all-NaN row in R). The
 host's q is not saved in checkpoints, so a resumed run trains on the base distribution
 until the next active probe (as in Sensaug). The torchvision geometric ops refuse a
 label whose size differs from the image's, which mmseg val pipelines produce on
