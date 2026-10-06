@@ -12,7 +12,8 @@
 # (task/mmseg_mae_base.yaml), the seed and the work dir. Edit the model or the optimizer here;
 # edit everything else in the yaml groups.
 #
-# Parity with Sensaug breaks on these datasets, where build_config picks a different file or path:
+# On these datasets build_config picks a different file or path, and
+# configs/recipe/<task>_<dataset>.yaml turns this task into it:
 #   ade20k: mae-base_upernet_8xb2-amp-160k_ade20k-512x512-ms.py [direct]
 #
 # Deviations from the source (all deliberate):
@@ -87,7 +88,8 @@ optim_wrapper = dict(
     constructor="LayerDecayOptimizerConstructor",
 )
 
-# `end=max_iters` is rewritten to the yaml's max_iters.
+# The builder sets train_cfg.max_iters from the yaml but leaves param_scheduler alone (as
+# Sensaug did), so a yaml max_iters other than this one doesn't move `end`.
 max_iters = 320000
 param_scheduler = [
     dict(

@@ -7,7 +7,8 @@
 dataset) is the base, and the builder fills in everything the yaml groups own:
 
     dataset/   the train / val / test dataloaders (type, data_root, data_prefix,
-               pipelines), num_classes on every decode / auxiliary head, the crop size
+               pipelines), num_classes on every decode / auxiliary head, the crop size,
+               and the evaluator when the dataset names one (``mmseg.val_evaluator``)
     host/      ``model.data_preprocessor`` becomes ``GpuAugSegDataPreProcessor`` with
                ``host=dict(type=<name>, **kwargs)`` and ``augment``
     probe/ selector/
@@ -27,8 +28,8 @@ Ported from Sensaug's ``train.py``: ``_localize_pretrained_checkpoint`` (636-670
 ``build_config`` (672-1120): AMP (704-720), auto_scale_lr (722-724), work_dir and resume
 (735-770), the train pipeline and data root (772-870), the visualizer (884-889), the
 round interval (891-905), logger and checkpoint hooks (925-933), the test dataloader
-(752, 935), the SA loop's loops (950-1010), the LoveDA learning rate (1003-1005), the
-GPU preprocessor (1100-1110) and the randomness (1112).
+(752, 935), the SA loop's loops (950-1010), the GPU preprocessor (1100-1110) and the
+randomness (1112).
 
 What the sensaug host's loops require of this config (``RobustValLoop`` raises at its
 first round otherwise), and what the builder therefore derives rather than reads:
@@ -57,10 +58,15 @@ Left out of Sensaug's ``build_config``, and why:
 - the auto-resume on an existing ``last_checkpoint``: ``resume`` is explicit (slurm/
   train.sbatch refuses an existing run without ``ALLOW_RESUME``)
 
-Deviations, for the record: ``randomness.seed`` is ``cfg.seed`` (Sensaug: 0); the LoveDA
-lr factor (SA arms only, as Sensaug) is applied to ``optim_wrapper.optimizer``, the one
-the Runner builds, as well as ``cfg.optimizer``; the checkpoint interval is the task's;
-the visualizer keeps the local backend beside TensorBoard.
+Not ported because it never took effect: Sensaug's LoveDA learning rate (999-1001, SA
+arms only), ``cfg.optimizer.lr *= 0.1``. ``cfg.optimizer`` is a separate ConfigDict from
+``optim_wrapper.optimizer``, the one the Runner builds, so Sensaug's LoveDA runs trained
+at the config's full lr (checked with mmengine on its pspnet_r18 and segformer_mit-b0
+LoveDA configs). These do too.
+
+Deviations, for the record: ``randomness.seed`` is ``cfg.seed`` (Sensaug: 0); the
+checkpoint interval is the task's; the visualizer keeps the local backend beside
+TensorBoard.
 """
 
 import copy
@@ -218,6 +224,8 @@ def build(cfg, work_dir: str, *, launcher: str = "none", resume: bool = False):
     # val and test: batch size 1 (labels of mixed native sizes must stack on the eval path)
     out.val_dataloader = _dataloader(out.get("val_dataloader"), dataset, "val", 1, num_workers, data_root)
     out.test_dataloader = copy.deepcopy(out.val_dataloader)
+    if mm.get("val_evaluator"):  # a dataset whose mmseg base reports more (synapse: mDice)
+        out.val_evaluator = copy.deepcopy(mm["val_evaluator"])
     out.test_evaluator = copy.deepcopy(out.get("val_evaluator"))
 
     num_classes = int(dataset["num_classes"])
@@ -225,11 +233,14 @@ def build(cfg, work_dir: str, *, launcher: str = "none", resume: bool = False):
     if "auxiliary_head" in out.model:
         _set_num_classes(out.model.auxiliary_head, num_classes)
 
-    # crop: the preprocessor pads training batches to it (where the task declares a size).
+    # crop: the preprocessor pads training batches to it, as every Sensaug config's
+    # `data_preprocessor = dict(size=crop_size)` did. That is also the probe's batch
+    # (to_unit runs training=True), so a val image smaller than the crop (pascal_voc12,
+    # ade20k) is padded before any op, geometric ones included, is applied. The task
+    # .py files leave `size` out on purpose; it comes from here.
     # Slide inference keeps the task's own window, as Sensaug's per-file configs did.
     dp = out.model.data_preprocessor
-    if "size" in dp:
-        dp.size = crop
+    dp.size = crop
     mtest = out.model.get("test_cfg")
     if mtest is not None and mtest.get("mode") == "slide":
         window = tuple(mtest.get("crop_size", ()))
@@ -263,11 +274,6 @@ def build(cfg, work_dir: str, *, launcher: str = "none", resume: bool = False):
             out.optim_wrapper.loss_scale = "dynamic"
     if "auto_scale_lr" in out and "base_batch_size" in out.auto_scale_lr:
         out.auto_scale_lr.enable = True
-    if dataset.get("name") == "loveda" and is_sa:
-        # Sensaug 1003-1005, on the SA arms only: LoveDA doesn't converge at the default lr
-        out.optim_wrapper.optimizer.lr = out.optim_wrapper.optimizer.lr * 0.1
-        if "optimizer" in out and "lr" in out.optimizer:
-            out.optimizer.lr = out.optimizer.lr * 0.1
 
     out.visualizer = dict(
         type="Visualizer", vis_backends=[dict(type="LocalVisBackend"), dict(type="TensorboardVisBackend")]

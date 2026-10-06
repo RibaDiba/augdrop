@@ -1,0 +1,9 @@
+# @package _global_
+# Sensaug's recipe for --backbone segformer --dataset a2i2haze:
+# segformer/segformer_mit-b0_8xb2-40k_a2i2haze-256x256.py (see configs/train.yaml).
+task:
+  max_iters: 40000          # schedule_40k
+  batch_size: 2             # per GPU; x4 GPUs = 8, no auto_scale_lr in the source
+  cfg_options:
+    model.test_cfg: {_delete_: true, mode: whole}   # the source has no slide window
+    param_scheduler.1.end: 40000   # the source's PolyLR ends with training

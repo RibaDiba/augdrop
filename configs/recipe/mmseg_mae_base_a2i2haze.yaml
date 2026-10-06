@@ -1,0 +1,15 @@
+# @package _global_
+# Sensaug's recipe for --backbone mae --dataset a2i2haze. mae/ has no *a2i2haze*
+# file, so Sensaug's fallback (see configs/train.yaml) took the first natural-sorted
+# non-r101 config, mae/mae-base_upernet_8xb2-amp-160k_ade20k-512x512-ms.py,
+# merged _base_/datasets/a2i2haze.py (256x256, batch 2) and
+# _base_/schedules/schedule_320k.py into it, and kept its optim_wrapper. num_classes was
+# the file's (dropaug: the dataset's).
+# That is the task's model, optimizer and schedule (flattened from the same fallback).
+# The preprocessor keeps the source file's pad size, 512x512, larger than this dataset's
+# 256x256, so every training and probe batch is padded to it with ignored label pixels.
+task:
+  max_iters: 320000         # schedule_320k
+  batch_size: 2             # per GPU; x4 GPUs = 8, no auto_scale_lr in the source
+  cfg_options:
+    model.data_preprocessor.size: [512, 512]

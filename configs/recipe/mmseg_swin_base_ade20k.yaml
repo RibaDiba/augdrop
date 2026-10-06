@@ -1,0 +1,13 @@
+# @package _global_
+# Sensaug's recipe for --backbone swin --dataset ade20k:
+# swin/swin-base-patch4-window7-in1k-pre_upernet_8xb2-160k_ade20k-512x512.py (see configs/train.yaml),
+# the file the task's .py is flattened from. The task carries the schedule Sensaug's
+# fallback gave every other dataset (schedule_320k); on ade20k Sensaug used the file
+# directly, with its own schedule and batch.
+task:
+  max_iters: 160000
+  batch_size: 2              # per GPU; x4 GPUs = 8, no auto_scale_lr in the source
+  cfg_options:
+    param_scheduler:
+      - {type: LinearLR, start_factor: 1.0e-6, by_epoch: false, begin: 0, end: 1500}
+      - {type: PolyLR, eta_min: 0.0, power: 1.0, begin: 1500, end: 160000, by_epoch: false}

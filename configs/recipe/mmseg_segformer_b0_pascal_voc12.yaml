@@ -1,0 +1,10 @@
+# @package _global_
+# Sensaug's recipe for --backbone segformer --dataset pascal_voc12:
+# segformer/segformer_mit-b0_8xb2-20k_pascal_voc12-512x512.py (see configs/train.yaml).
+task:
+  max_iters: 20000           # schedule_20k; the round grid and probe schedule follow it
+  batch_size: 2              # per GPU; x4 GPUs = 8, no auto_scale_lr in the source
+  cfg_options:
+    model.test_cfg: {_delete_: true, mode: whole}
+    # The source's PolyLR still ends at 160000 (copied from the 160k recipe), so over
+    # 20000 iterations the lr only falls to ~0.88 of its peak. Kept: that is what ran.

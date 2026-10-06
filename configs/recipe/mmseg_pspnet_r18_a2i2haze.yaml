@@ -1,0 +1,18 @@
+# @package _global_
+# Sensaug's recipe for --backbone pspnet --dataset a2i2haze:
+# pspnet/pspnet_r18-d8_4xb2-80k_a2i2haze.py (see configs/train.yaml).
+# The preprocessor keeps the source file's pad size, 512x512, larger than this dataset's
+# 256x256, so every training and probe batch is padded to it with ignored label pixels.
+task:
+  max_iters: 80000          # schedule_80k
+  batch_size: 2             # per GPU; x4 GPUs = 8, no auto_scale_lr in the source
+  cfg_options:
+    model.data_preprocessor.size: [512, 512]
+    auto_scale_lr.enable: false     # the source has none (at 4 x 2 = 8 the task's would not rescale either)
+    # the source's loss on both heads: CE + 3 x Dice (the auxiliary head's CE at weight 1, not 0.4)
+    model.decode_head.loss_decode:
+      - {type: CrossEntropyLoss, loss_name: loss_ce, loss_weight: 1.0}
+      - {type: DiceLoss, loss_name: loss_dice, loss_weight: 3.0}
+    model.auxiliary_head.loss_decode:
+      - {type: CrossEntropyLoss, loss_name: loss_ce, loss_weight: 1.0}
+      - {type: DiceLoss, loss_name: loss_dice, loss_weight: 3.0}

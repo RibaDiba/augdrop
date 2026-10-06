@@ -1,0 +1,8 @@
+# @package _global_
+# Sensaug's recipe for --backbone pspnet --dataset loveda:
+# pspnet/pspnet_r18-d8_4xb4-80k_loveda-512x512.py (see configs/train.yaml).
+task:
+  max_iters: 80000           # schedule_80k
+  batch_size: 4              # per GPU; x4 GPUs = 16
+  cfg_options:
+    auto_scale_lr.enable: false    # the source has no auto_scale_lr: the lr is not rescaled

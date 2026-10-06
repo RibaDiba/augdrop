@@ -8,8 +8,9 @@
 # (task/mmseg_vitsam.yaml), the seed and the work dir. Edit the model or the optimizer here;
 # edit everything else in the yaml groups.
 #
-# Sensaug only uses this file for cityscapes; on any other dataset the flag is ignored and the regular
-# per-backbone pick applies.
+# Sensaug only uses this file for cityscapes (configs/recipe/mmseg_vitsam_cityscapes.yaml); on any
+# other dataset the flag is ignored and the regular per-backbone pick applies, so this task has
+# no Sensaug counterpart there.
 #
 # Deviations from the source (all deliberate):
 #   - model.pretrained is None, as Sensaug's build_config forces (`cfg.model.pretrained = None`).
@@ -96,7 +97,8 @@ optim_wrapper = dict(
     ),
 )
 
-# `end=max_iters` is rewritten to the yaml's max_iters.
+# The builder sets train_cfg.max_iters from the yaml but leaves param_scheduler alone (as
+# Sensaug did), so a yaml max_iters other than this one doesn't move `end`.
 max_iters = 80000
 param_scheduler = [
     dict(type="LinearLR", start_factor=1e-06, by_epoch=False, begin=0, end=1500),

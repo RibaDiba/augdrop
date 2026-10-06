@@ -4,9 +4,9 @@
 # Sensaug's `loveDA` under its data root (configs/nexus.yaml `datasets:`), converted by
 # its dataset_converters/loveda.py. The val Resize is the identity on 1024x1024 images,
 # so the label keeps the image's size.
-# Sensaug trained LoveDA's SA-loop arms at a tenth of the task's learning rate ("LoveDA
-# doesn't converge very well on default lr"). tasks/mmseg/config.py applies the same
-# x0.1 with the sensaug host only, so other hosts train LoveDA at the task's full lr.
+# Sensaug meant to train LoveDA's SA-loop arms at a tenth of the learning rate, but its
+# `cfg.optimizer.lr *= 0.1` never reached optim_wrapper, so they ran at the full lr, as
+# every host does here (see tasks/mmseg/config.py).
 name: loveda
 kind: seg
 role: train

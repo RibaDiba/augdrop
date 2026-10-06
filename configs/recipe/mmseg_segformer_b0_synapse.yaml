@@ -1,0 +1,11 @@
+# @package _global_
+# Sensaug's recipe for --backbone segformer --dataset synapse:
+# segformer/segformer_mit-b0_8xb2-40k_synapse-224x224.py (see configs/train.yaml).
+task:
+  max_iters: 40000          # schedule_40k
+  batch_size: 2             # per GPU; x4 GPUs = 8, no auto_scale_lr in the source
+  cfg_options:
+    model.test_cfg: {_delete_: true, mode: whole}   # the source has no slide window
+    # The source's PolyLR ends at 80000 (copied from the 80k recipe), so over 40000
+    # iterations the lr only falls to about half its peak. Kept: that is what ran.
+    param_scheduler.1.end: 80000

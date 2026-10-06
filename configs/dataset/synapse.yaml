@@ -1,0 +1,40 @@
+# Synapse multi-organ CT (abdomen), 9 classes, background included.
+#   <data_root>/img_dir/{train,val}/*.jpg
+#   <data_root>/ann_dir/{train,val}/*.png
+# Sensaug's `synapse` under its data root, the 2D slices mmseg's
+# dataset_converters/synapse.py writes.
+#
+# Two things here differ from every other dataset, both because Sensaug's train pipeline
+# filter (drop RandomResize, RandomFlip, PhotoMetricDistortion) didn't touch them:
+#   - there is no RandomCrop: images are resized to 224 on the short side
+#   - mmseg's RandomRotFlip (p=0.5 rotate by up to 20 degrees, p=0.5 flip) stays, so every
+#     arm, the control included, trains with this CPU augmentation before the host's ops
+# Kept, since that is what Sensaug's synapse runs trained with.
+name: synapse
+kind: seg
+role: train
+num_classes: 9
+data_root: ${cluster.data_root}/synapse
+shift_targets: []
+
+mmseg:
+  crop_size: [224, 224]      # the preprocessor's pad size; there is no crop
+  dataset:
+    type: SynapseDataset
+  train:
+    data_prefix: {img_path: img_dir/train, seg_map_path: ann_dir/train}
+    pipeline:
+      - {type: LoadImageFromFile}
+      - {type: LoadAnnotations}
+      - {type: Resize, scale: [224, 224], keep_ratio: true}
+      - {type: RandomRotFlip, rotate_prob: 0.5, flip_prob: 0.5, degree: 20}
+      - {type: PackSegInputs}
+  val:
+    data_prefix: {img_path: img_dir/val, seg_map_path: ann_dir/val}
+    pipeline:
+      - {type: LoadImageFromFile}
+      - {type: Resize, scale: [224, 224], keep_ratio: true}
+      - {type: LoadAnnotations}
+      - {type: PackSegInputs}
+  # mmseg's synapse base also reports mDice (the checkpoint is still picked on mIoU)
+  val_evaluator: {type: IoUMetric, iou_metrics: [mIoU, mDice]}

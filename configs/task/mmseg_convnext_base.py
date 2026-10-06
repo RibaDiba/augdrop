@@ -9,7 +9,8 @@
 # (task/mmseg_convnext_base.yaml), the seed and the work dir. Edit the model or the optimizer here;
 # edit everything else in the yaml groups.
 #
-# Parity with Sensaug breaks on these datasets, where build_config picks a different file or path:
+# On these datasets build_config picks a different file or path, and
+# configs/recipe/<task>_<dataset>.yaml turns this task into it:
 #   ade20k: convnext-base_upernet_8xb2-amp-160k_ade20k-512x512.py [direct]
 #   pascal_voc12: convnext-base-upernet_8xb2-amp-160k_cityscapes-512x1024.py [fallback path: schedule_320k + that dataset's base merged in]
 #   loveda: convnext-base-upernet_8xb2-amp-160k_cityscapes-512x1024.py [fallback path: schedule_320k + that dataset's base merged in]
@@ -83,7 +84,8 @@ optim_wrapper = dict(
     loss_scale="dynamic",
 )
 
-# `end=max_iters` is rewritten to the yaml's max_iters.
+# The builder sets train_cfg.max_iters from the yaml but leaves param_scheduler alone (as
+# Sensaug did), so a yaml max_iters other than this one doesn't move `end`.
 max_iters = 160000
 param_scheduler = [
     dict(type="LinearLR", start_factor=1e-06, by_epoch=False, begin=0, end=1500),

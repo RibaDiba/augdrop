@@ -1,0 +1,9 @@
+# @package _global_
+# Sensaug's recipe for --backbone segformer --dataset loveda:
+# segformer/segformer_mit-b0_8xb2-80k_loveda-512x512.py (see configs/train.yaml).
+task:
+  max_iters: 80000           # schedule_80k
+  batch_size: 2              # per GPU; x4 GPUs = 8, no auto_scale_lr in the source
+  cfg_options:
+    model.test_cfg: {_delete_: true, mode: whole}
+    param_scheduler.1.end: 80000   # the source's PolyLR ends with training

@@ -1,0 +1,33 @@
+# ISPRS Potsdam (remote sensing), 6 classes; label 0 (boundary) is dropped.
+#   <data_root>/img_dir/{train,val}/*.png
+#   <data_root>/ann_dir/{train,val}/*.png
+# Sensaug's `potsdam` under its data root (configs/nexus.yaml `datasets:`), the 512x512
+# tiles mmseg's dataset_converters/potsdam.py writes. The val Resize is the identity on
+# them, so the label keeps the image's size.
+name: potsdam
+kind: seg
+role: train
+num_classes: 6
+data_root: ${cluster.data_root}/potsdam
+shift_targets: []
+
+mmseg:
+  crop_size: [512, 512]
+  dataset:
+    type: PotsdamDataset
+  # Sensaug's train pipeline for every arm: mmseg's minus RandomResize, RandomFlip and
+  # PhotoMetricDistortion, so the host's ops are the only augmentation.
+  train:
+    data_prefix: {img_path: img_dir/train, seg_map_path: ann_dir/train}
+    pipeline:
+      - {type: LoadImageFromFile}
+      - {type: LoadAnnotations, reduce_zero_label: true}
+      - {type: RandomCrop, crop_size: '${dataset.mmseg.crop_size}', cat_max_ratio: 0.75}
+      - {type: PackSegInputs}
+  val:
+    data_prefix: {img_path: img_dir/val, seg_map_path: ann_dir/val}
+    pipeline:
+      - {type: LoadImageFromFile}
+      - {type: Resize, scale: [512, 512], keep_ratio: true}
+      - {type: LoadAnnotations, reduce_zero_label: true}
+      - {type: PackSegInputs}

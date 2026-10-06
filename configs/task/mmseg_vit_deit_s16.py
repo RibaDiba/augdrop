@@ -9,7 +9,8 @@
 # (task/mmseg_vit_deit_s16.yaml), the seed and the work dir. Edit the model or the optimizer here;
 # edit everything else in the yaml groups.
 #
-# Parity with Sensaug breaks on these datasets, where build_config picks a different file or path:
+# On these datasets build_config picks a different file or path, and
+# configs/recipe/<task>_<dataset>.yaml turns this task into it:
 #   ade20k: vit_deit-b16-ln_mln_upernet_8xb2-160k_ade20k-512x512.py [direct]
 #   pascal_voc12: vit_deit-b16-ln_mln_upernet_8xb2-160k_ade20k-512x512.py [fallback path: schedule_320k + that dataset's base merged in]
 #   loveda: vit_deit-b16-ln_mln_upernet_8xb2-160k_ade20k-512x512.py [fallback path: schedule_320k + that dataset's base merged in]

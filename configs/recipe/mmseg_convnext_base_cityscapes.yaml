@@ -1,0 +1,8 @@
+# @package _global_
+# Sensaug's recipe for --backbone convnext --dataset cityscapes (see configs/train.yaml): the
+# per-GPU batch of convnext/convnext-base-upernet_8xb2-amp-160k_cityscapes-512x1024.py
+# The task's batch is the source recipe's global one over 8 GPUs; Sensaug ran this one
+# on 4. Neither config has auto_scale_lr, so both train at the file's lr.
+task:
+  max_iters: 160000
+  batch_size: 2

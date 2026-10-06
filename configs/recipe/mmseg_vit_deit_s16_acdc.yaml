@@ -1,0 +1,12 @@
+# @package _global_
+# Sensaug's recipe for --backbone vit --dataset acdc: the cityscapes file,
+# vit/vit_deit-s16_upernet_8xb2-40k_cityscapes-512x512.py (train.py globs *cityscapes* for acdc),
+# on ACDC's train split, validated on its test split (apply_acdc_train_eval). So this
+# is mmseg_vit_deit_s16_cityscapes.yaml's body; keep the two in step.
+task:
+  max_iters: 80000           # the source's PolyLR still ends at 160000; kept, as it ran
+  batch_size: 1
+  cfg_options:
+    # the source's crop_size, not cityscapes': inert, since a 512x1024 crop is larger and
+    # nothing gets padded, but it is what the source set
+    model.data_preprocessor.size: [512, 512]

@@ -1,0 +1,14 @@
+# @package _global_
+# Sensaug's recipe for --backbone mae --dataset cityscapes (see configs/train.yaml): the
+# per-GPU batch of mae/mae-base_upernet_8xb2-amp-160k_ade20k-512x512-ms.py
+# by Sensaug's fallback path (no *cityscapes* file in mae/: that config with
+# _base_/datasets/cityscapes.py merged in, whose train_dataloader sets the batch).
+# The task's batch is the source recipe's global one over 8 GPUs; Sensaug ran this one
+# on 4. Neither config has auto_scale_lr, so both train at the file's lr.
+task:
+  max_iters: 320000          # schedule_320k
+  batch_size: 2
+  cfg_options:
+    # the source's crop_size, not cityscapes': inert, since a 512x1024 crop is larger and
+    # nothing gets padded, but it is what the source set
+    model.data_preprocessor.size: [512, 512]

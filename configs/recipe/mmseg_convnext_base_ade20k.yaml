@@ -1,0 +1,10 @@
+# @package _global_
+# Sensaug's recipe for --backbone convnext --dataset ade20k:
+# convnext/convnext-base_upernet_8xb2-amp-160k_ade20k-512x512.py (see configs/train.yaml).
+# Model, optimizer and schedule match the task's (flattened from the cityscapes file); the
+# per-GPU batch and the slide window differ.
+task:
+  max_iters: 160000
+  batch_size: 2              # per GPU; x4 GPUs = 8, no auto_scale_lr in the source
+  cfg_options:
+    model.test_cfg.crop_size: [512, 512]   # the stride stays (341, 341)

@@ -1,0 +1,12 @@
+# @package _global_
+# Sensaug's recipe for --backbone vitsam --dataset cityscapes (Sensaug's
+# --use-foundation-backbone): vitsam_cityscapes_1024.py, the file the task's .py is
+# flattened from. Sensaug had no ViT-SAM recipe for any other dataset.
+task:
+  max_iters: 80000           # schedule_80k
+  batch_size: 2              # per GPU; x4 GPUs = 8, no auto_scale_lr in the source
+  cfg_options:
+    # The source's crop_size = (1024, 1024) set only the preprocessor; the crop is the
+    # dataset's 512x1024. So every training batch is padded to 1024x1024 with ignored
+    # label pixels (probe images, at 1024x2048, are not padded).
+    model.data_preprocessor.size: [1024, 1024]

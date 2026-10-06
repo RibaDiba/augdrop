@@ -1,0 +1,10 @@
+# @package _global_
+# Sensaug's recipe for --backbone segformer --dataset ade20k:
+# segformer/segformer_mit-b0_8xb2-160k_ade20k-512x512.py (see configs/train.yaml).
+# max_iters, batch size, crop and schedule already match the task's; only the test mode
+# differs.
+task:
+  max_iters: 160000
+  batch_size: 2              # per GPU; x4 GPUs = 8, no auto_scale_lr in the source
+  cfg_options:
+    model.test_cfg: {_delete_: true, mode: whole}   # the source has no slide window

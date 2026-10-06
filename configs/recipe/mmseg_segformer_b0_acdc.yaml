@@ -1,0 +1,11 @@
+# @package _global_
+# Sensaug's recipe for --backbone segformer --dataset acdc: the cityscapes file,
+# segformer/segformer_mit-b0_8xb1-160k_cityscapes-1024x1024.py (train.py globs *cityscapes* for acdc),
+# on ACDC's train split, validated on its test split (apply_acdc_train_eval). So this
+# is mmseg_segformer_b0_cityscapes.yaml's body; keep the two in step.
+task:
+  max_iters: 160000
+  batch_size: 1              # per GPU; x4 GPUs = 4, no auto_scale_lr in the source
+dataset:
+  mmseg:
+    crop_size: [1024, 1024]  # RandomCrop and the preprocessor's pad size

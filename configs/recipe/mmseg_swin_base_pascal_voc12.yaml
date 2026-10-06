@@ -1,0 +1,11 @@
+# @package _global_
+# Sensaug's recipe for --backbone swin --dataset pascal_voc12. swin/ has no *pascal_voc12*
+# file, so Sensaug's fallback (see configs/train.yaml) took the first natural-sorted
+# non-r101 config, swin/swin-base-patch4-window7-in1k-pre_upernet_8xb2-160k_ade20k-512x512.py,
+# merged _base_/datasets/pascal_voc12.py (crop 512x512, batch 4) and
+# _base_/schedules/schedule_320k.py into it, and kept its optim_wrapper.
+# That is the task as it stands (flattened from the same fallback), so this restates the
+# task's values. num_classes was the file's 150 (dropaug: the dataset's).
+task:
+  max_iters: 320000          # schedule_320k
+  batch_size: 4              # per GPU; x4 GPUs = 16, no auto_scale_lr in the source

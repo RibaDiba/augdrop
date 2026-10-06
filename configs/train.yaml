@@ -18,6 +18,18 @@ defaults:
   - selector: none
   - probe: default
   - sa: default            # the SA loop's knobs; only read when host=sensaug
+  # Sensaug's recipe for this (task, dataset). Sensaug's build_config took the model size,
+  # batch size, crop, max_iters, schedule, pad size and test window from the
+  # per-(backbone, dataset) mmseg file it found (glob `<backbone>/*<dataset>*.py`,
+  # natural-sorted, first; with none, the first non-r101 file of the backbone with
+  # _base_/datasets/<dataset>.py and schedule_320k merged in). configs/recipe/<task>_<dataset>.yaml
+  # turns the task into that file's resolved config, for every pair Sensaug could train:
+  # the seven backbones on cityscapes, ade20k, pascal_voc12, loveda, potsdam, synapse and
+  # a2i2haze, all but swin and mae on acdc, and vitsam on cityscapes. (Sensaug could not
+  # build swin/mae on acdc or anything on idd: its fallback needs _base_/datasets/acdc.py
+  # and idd.py, which don't exist.) A pair with no recipe runs the task as it is.
+  # Command-line overrides still win.
+  - optional recipe: ${task}_${dataset}
   - _self_
 
 seed: 0

@@ -1,0 +1,41 @@
+# A2I2-Haze (UAV imagery in haze), 14 object classes.
+#   <data_root>/imgs/{train,val}/*c.jpg
+#   <data_root>/labels/{train,val}/*c_labelTrainIds.png
+# Sensaug's `a2i2haze` under its data root. Sensaug registered an A2I2HazeDataset
+# (sensaug/dataset/datasets.py): a BaseSegDataset with these classes, palette and
+# suffixes. BaseSegDataset takes them as arguments, so no class is ported.
+name: a2i2haze
+kind: seg
+role: train
+num_classes: 14
+data_root: ${cluster.data_root}/a2i2haze
+shift_targets: []
+
+mmseg:
+  crop_size: [256, 256]
+  dataset:
+    type: BaseSegDataset
+    img_suffix: c.jpg
+    seg_map_suffix: c_labelTrainIds.png
+    metainfo:
+      classes: [sedan, van, utv, pickup, tool, rope, extinguisher, case, barrel, helmet,
+                backpack, survivor, truss, barrier]
+      palette: [[0, 0, 142], [0, 0, 90], [0, 0, 110], [0, 0, 70], [153, 153, 153],
+                [220, 220, 0], [119, 11, 32], [244, 35, 232], [0, 60, 100], [250, 170, 30],
+                [107, 142, 35], [220, 20, 60], [70, 70, 70], [180, 165, 180]]
+  # Sensaug's train pipeline for every arm: mmseg's minus RandomResize, RandomFlip and
+  # PhotoMetricDistortion, so the host's ops are the only augmentation.
+  train:
+    data_prefix: {img_path: imgs/train, seg_map_path: labels/train}
+    pipeline:
+      - {type: LoadImageFromFile}
+      - {type: LoadAnnotations}
+      - {type: RandomCrop, crop_size: '${dataset.mmseg.crop_size}', cat_max_ratio: 0.75}
+      - {type: PackSegInputs}
+  val:
+    data_prefix: {img_path: imgs/val, seg_map_path: labels/val}
+    pipeline:
+      - {type: LoadImageFromFile}
+      - {type: Resize, scale: [640, 480], keep_ratio: true}
+      - {type: LoadAnnotations}
+      - {type: PackSegInputs}

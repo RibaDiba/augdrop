@@ -1,0 +1,18 @@
+# @package _global_
+# Sensaug's recipe for --backbone vit --dataset ade20k:
+# vit/vit_deit-b16-ln_mln_upernet_8xb2-160k_ade20k-512x512.py (see configs/train.yaml). Its
+# natural sort picks DeiT-B/16 here, not the task's DeiT-S/16, so this recipe makes the
+# task that model (as trained by Sensaug: `pretrained` is None, so from scratch, like the
+# S/16). The optimizer and the schedule match the task's.
+task:
+  max_iters: 160000          # where the task's PolyLR already ends
+  batch_size: 2              # per GPU; x4 GPUs = 8, no auto_scale_lr in the source
+  cfg_options:
+    # DeiT-B/16 with a final LayerNorm and a MultiLevelNeck (the source's
+    # _base_/models/upernet_vit-b16_ln_mln.py); every other model key matches the S/16 task
+    model.backbone.embed_dims: 768
+    model.backbone.num_heads: 12
+    model.backbone.final_norm: true
+    model.neck: {type: MultiLevelNeck, in_channels: [768, 768, 768, 768], out_channels: 768, scales: [4, 2, 1, 0.5]}
+    model.decode_head.in_channels: [768, 768, 768, 768]
+    model.auxiliary_head.in_channels: 768

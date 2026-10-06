@@ -9,7 +9,8 @@
 # (task/mmseg_pspnet_r18.yaml), the seed and the work dir. Edit the model or the optimizer here;
 # edit everything else in the yaml groups.
 #
-# Parity with Sensaug breaks on these datasets, where build_config picks a different file or path:
+# On these datasets build_config picks a different file or path, and
+# configs/recipe/<task>_<dataset>.yaml turns this task into it:
 #   ade20k: pspnet_r50-d8_4xb4-80k_ade20k-512x512.py [direct]
 #   pascal_voc12: pspnet_r50-d8_4xb4-20k_pascal_voc12-512x512.py [direct]
 #   loveda: pspnet_r18-d8_4xb4-80k_loveda-512x512.py [direct]
@@ -80,7 +81,8 @@ optim_wrapper = dict(
 # lr is scaled by (GPUs x batch_size) / base_batch_size when that differs.
 auto_scale_lr = dict(base_batch_size=8, enable=True)
 
-# `end=max_iters` is rewritten to the yaml's max_iters.
+# The builder sets train_cfg.max_iters from the yaml but leaves param_scheduler alone (as
+# Sensaug did), so a yaml max_iters other than this one doesn't move `end`.
 max_iters = 80000
 param_scheduler = [
     dict(

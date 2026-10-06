@@ -12,7 +12,7 @@ its yaml files. What this module adds is the rules that span groups, checked bef
 anything is built, so a bad combination fails in seconds rather than hours into a run:
 
 - the dataset's ``kind`` is one the task's backend serves (seg for mmseg, cls for cls),
-  and an ``eval_only`` dataset (ACDC, IDD) is never trained on
+  and an ``eval_only`` dataset (IDD) is never trained on
 - the vocab is the host's vocabulary. The sensaug and uniform hosts take it as theirs;
   the torchvision hosts have a fixed one, and the vocab must equal it
 - training augments only with the hosts and ops ``tasks.augment`` can apply
@@ -62,8 +62,9 @@ CONFIG_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.pat
 
 #: The config groups one experiment chooses from, in configs/train.yaml's order.
 #: ``vocab`` is chosen by the host's own defaults unless overridden. ``sa`` is read only
-#: by the sensaug host.
-GROUPS = ("cluster", "task", "dataset", "host", "vocab", "selector", "probe", "sa")
+#: by the sensaug host. ``recipe`` is not chosen: it is ``<task>_<dataset>``, Sensaug's
+#: recipe for that pair, and is recorded only when configs/recipe/ has one.
+GROUPS = ("cluster", "task", "dataset", "host", "vocab", "selector", "probe", "sa", "recipe")
 
 #: The resolved config a run is rebuilt from.
 RUN_FILE = "dropaug.yaml"
@@ -98,6 +99,9 @@ def compose(overrides: Sequence[str] = (), config_name: str = "train") -> DictCo
     with initialize_config_dir(config_dir=CONFIG_DIR, version_base="1.3"):
         cfg = hydra_compose(config_name, overrides=list(overrides), return_hydra_config=True)
     choices = {group: cfg.hydra.runtime.choices.get(group) for group in (*GROUPS, "experiment")}
+    # Hydra reports the optional recipe's interpolated name whether or not the file exists.
+    if choices.get("recipe") and choices["recipe"] not in group_options("recipe"):
+        choices["recipe"] = None
     OmegaConf.set_struct(cfg, False)
     del cfg["hydra"]
     cfg.choices = {group: choice for group, choice in choices.items() if choice is not None}

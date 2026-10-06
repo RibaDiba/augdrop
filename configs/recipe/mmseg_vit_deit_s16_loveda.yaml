@@ -1,0 +1,24 @@
+# @package _global_
+# Sensaug's recipe for --backbone vit --dataset loveda. vit/ has no *loveda*
+# file, so Sensaug's fallback (see configs/train.yaml) took the first natural-sorted
+# non-r101 config, vit/vit_deit-b16-ln_mln_upernet_8xb2-160k_ade20k-512x512.py,
+# merged _base_/datasets/loveda.py (crop 512x512, batch 4) and
+# _base_/schedules/schedule_320k.py into it, and kept its optim_wrapper.
+# So the model is DeiT-B/16, not the task's DeiT-S/16 (from scratch, like the S/16), and
+# schedule_320k's PolyLR(power 0.9), with no warmup, replaces the source's warmup + linear
+# decay. num_classes was the file's 150 (dropaug: the dataset's).
+task:
+  max_iters: 320000          # schedule_320k
+  batch_size: 4              # per GPU; x4 GPUs = 16, no auto_scale_lr in the source
+  cfg_options:
+    # schedule_320k, which the fallback merges over the source's schedule
+    param_scheduler:
+      - {type: PolyLR, eta_min: 1.0e-4, power: 0.9, begin: 0, end: 320000, by_epoch: false}
+    # DeiT-B/16 with a final LayerNorm and a MultiLevelNeck (the source's
+    # _base_/models/upernet_vit-b16_ln_mln.py); every other model key matches the S/16 task
+    model.backbone.embed_dims: 768
+    model.backbone.num_heads: 12
+    model.backbone.final_norm: true
+    model.neck: {type: MultiLevelNeck, in_channels: [768, 768, 768, 768], out_channels: 768, scales: [4, 2, 1, 0.5]}
+    model.decode_head.in_channels: [768, 768, 768, 768]
+    model.auxiliary_head.in_channels: 768

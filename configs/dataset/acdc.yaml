@@ -1,15 +1,24 @@
-# ACDC (adverse conditions: fog, night, rain, snow), in Cityscapes' 19 train ids. A
-# domain-shift TEST set for Cityscapes-trained models, as in Sensaug's test.py: never
-# trained on. Laid out the way Sensaug's copy on Nexus is (all four conditions pooled):
-#   <data_root>/rgb_anno/test/**/*_rgb_anon.png
-#   <data_root>/gt/test/**/*_gt_labelTrainIds.png
-# For one condition point data_prefix at rgb_anno_<cond>/test and gt_<cond>/test.
+# ACDC (adverse conditions: fog, night, rain, snow), in Cityscapes' 19 train ids. Two uses:
+#   - a domain-shift TEST set for Cityscapes-trained models, as in Sensaug's test.py
+#     (scripts/eval.py --dataset acdc on a cityscapes run)
+#   - a training set, as Sensaug's train.py --dataset acdc: the backbone's cityscapes
+#     recipe (configs/recipe/<task>_acdc.yaml) on ACDC's train split, validated on its test
+#     split (Sensaug's apply_acdc_train_eval)
+# Laid out the way Sensaug's copy on Nexus is (all four conditions pooled):
+#   <data_root>/rgb_anno/{train,test}/**/*_rgb_anon.png
+#   <data_root>/gt/{train,test}/**/*_gt_labelTrainIds.png
+# For one condition point data_prefix at rgb_anno_<cond>/... and gt_<cond>/....
+# Sensaug's ACDCDataset is CityscapesDataset with these suffixes, so no class is ported.
 name: acdc
 kind: seg
-role: eval_only
+role: train
 eval_for: cityscapes       # the training dataset whose label space this shares
 num_classes: 19
 data_root: ${cluster.data_root}/acdc
+shift_targets: []
+# The SA loop scores each (op, level), and the curve search runs, on all of val rather
+# than a quarter (Sensaug's `eval_ratio = 1.0` on ACDC); configs/sa/default.yaml reads it.
+sa_ratio: 1.0
 
 mmseg:
   crop_size: [512, 1024]
@@ -17,6 +26,15 @@ mmseg:
     type: CityscapesDataset
     img_suffix: _rgb_anon.png
     seg_map_suffix: _gt_labelTrainIds.png
+  # Sensaug's train pipeline for every arm: the cityscapes config's minus RandomResize,
+  # RandomFlip and PhotoMetricDistortion, so the host's ops are the only augmentation.
+  train:
+    data_prefix: {img_path: rgb_anno/train, seg_map_path: gt/train}
+    pipeline:
+      - {type: LoadImageFromFile}
+      - {type: LoadAnnotations}
+      - {type: RandomCrop, crop_size: '${dataset.mmseg.crop_size}', cat_max_ratio: 0.75}
+      - {type: PackSegInputs}
   val:
     data_prefix: {img_path: rgb_anno/test, seg_map_path: gt/test}
     pipeline:

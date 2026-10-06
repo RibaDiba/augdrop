@@ -1,0 +1,8 @@
+# @package _global_
+# Sensaug's recipe for --backbone convnext --dataset acdc: the cityscapes file,
+# convnext/convnext-base-upernet_8xb2-amp-160k_cityscapes-512x1024.py (train.py globs *cityscapes* for acdc),
+# on ACDC's train split, validated on its test split (apply_acdc_train_eval). So this
+# is mmseg_convnext_base_cityscapes.yaml's body; keep the two in step.
+task:
+  max_iters: 160000
+  batch_size: 2
