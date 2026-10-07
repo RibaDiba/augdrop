@@ -48,6 +48,7 @@ set -o pipefail
 # Other env:
 #   MAX_PARALLEL=8                --submit's array throttle (%K)
 #   EXTRA_SBATCH_ARGS="..."       forwarded to sbatch by --submit
+#   NAME=refactor1                --submit names the array refactor1-dropaug-matrix
 #   everything train.sbatch reads (LAM, CLUSTER, DESCENDING_MA, INV_AUG, WORK_DIR, RUN_TAG,
 #   TRAIN_ARGS, ALLOW_RESUME, EVAL, ...) passes through to every task
 #
@@ -104,6 +105,12 @@ if [ -z "${SLURM_ARRAY_TASK_ID:-}" ]; then
     fi
     EXTRA_SB=()
     [ -n "${EXTRA_SBATCH_ARGS:-}" ] && read -r -a EXTRA_SB <<< "${EXTRA_SBATCH_ARGS}"
+    if [ -n "${NAME:-}" ]; then
+        case "${NAME}" in
+            *[!a-zA-Z0-9_-]*) echo "ERROR: NAME='${NAME}' must be [A-Za-z0-9_-]." >&2; exit 1 ;;
+        esac
+        EXTRA_SB+=(-J "${NAME}-dropaug-matrix")
+    fi
     # Exported, so the tasks decode against these lists and not whatever the
     # defaults above are by the time they start.
     export HOSTS DATASETS SELECTORS SEEDS BACKBONES

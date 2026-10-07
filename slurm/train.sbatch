@@ -94,7 +94,7 @@ set -o pipefail
 # rejected below instead of silently becoming the default.
 HOST="${1-sensaug}"
 DATASET="${2-cityscapes}"
-SELECTOR="${3-mrmr}"
+SELECTOR="${3-sensaug}"
 SEED="${4-0}"
 BACKBONE="${BACKBONE:-segformer}"
 LAM="${LAM:-0.25}"
