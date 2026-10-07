@@ -34,16 +34,20 @@ What Sensaug's train.py set for sensaug (its ``--aug-type ours``) / ``grad_corr`
     test_evaluator = val_evaluator
     # and model.data_preprocessor = GpuAugSegDataPreProcessor with host=dict(type="sensaug")
 
-Kept from Sensaug, on purpose:
-
-- KID. ``SubsetTestLoop`` feeds KID ``data_batch["inputs"]``, the dataloader's images,
-  but the op is applied later, in the preprocessor. So on this path KID compares the
-  clean subset with itself, as it did in every Sensaug diff32 run, and the objective's
-  KID term is the ratio of two near-zero estimates.
-- ``descending_MA`` (see ``sa.pdf``).
+Kept from Sensaug, on purpose: ``descending_MA`` (see ``sa.pdf``).
 
 Changed from Sensaug:
 
+- KID sees the op. Sensaug's ``SubsetTestLoop`` fed KID ``data_batch["inputs"]``, the
+  dataloader's images, but on the diff32 path (Sensaug ``cc1e403``, 2026-08-16, on) the
+  op is applied later, in the preprocessor. So KID compared the clean subset with
+  itself, and the objective's KID term was the ratio of two draws of the same subset
+  noise. Here KID's fake side is the batch the model was scored on (the preprocessor's
+  output, hooked), converted back to the form the real features were taken in: uint8,
+  the dataloader's channel order and size. Still Sensaug's: the channel order is mmcv's
+  BGR, though Inception expects RGB, and the estimator is torchmetrics' with
+  ``subset_size=4``, whose noise a check on stand-in images (not a run) found larger
+  than a mild op's whole KID (``blur``, ``color_neg``). Both are open.
 - The round counter is set at the first ``run()``, from the iteration count, not in
   ``__init__``. mmengine builds the val loop before ``load_or_resume``, so Sensaug's
   ``runner.iter // val_interval`` there was always 0, and a resumed run restarted its
@@ -81,7 +85,7 @@ from mmseg.registry import LOOPS
 import sa
 from hosts.sensaug import SA_CURVE_CADENCE
 
-from .backend import unwrap
+from .backend import _mean_std, unwrap
 from .hooks import ApplyWeightsHook
 
 __all__ = [
@@ -548,8 +552,9 @@ class SubsetTestLoop(TestLoop):
     """Test on the first ``ratio`` of the dataloader, with KID against the same subset's
     clean images (torchmetrics' KernelInceptionDistance, features cached at build).
 
-    KID reads ``data_batch["inputs"]``, before the preprocessor, as Sensaug's did; see
-    the module docstring for what that means with the eval slot."""
+    The real side is ``data_batch["inputs"]``, as loaded. The fake side is what the
+    model was scored on, the preprocessor's output (so the eval slot's op), put back in
+    that form by ``_as_loaded``; see the module docstring."""
 
     def __init__(self, runner, dataloader, evaluator, ratio: float = 0.5, fp16: bool = False) -> None:
         super().__init__(runner, dataloader, evaluator, fp16)
@@ -587,11 +592,26 @@ class SubsetTestLoop(TestLoop):
         self.runner.model.eval()
         self.kid.reset()
 
-        dataloader_iter = iter(self.dataloader)
-        for idx in range(max_iter):
-            data_batch = next(dataloader_iter)
-            self.run_iter(idx, data_batch)
-            self.kid.update(torch.stack(data_batch["inputs"], dim=0).to(get_device()), real=False)
+        # KID's fake side is the batch the model was scored on: the preprocessor's
+        # output, with the eval slot's op applied. data_batch["inputs"] stays clean.
+        dp = unwrap(self.runner.model).data_preprocessor
+        scored = []
+        handle = dp.register_forward_hook(lambda _module, _args, out: scored.append(out["inputs"]))
+        try:
+            dataloader_iter = iter(self.dataloader)
+            for idx in range(max_iter):
+                data_batch = next(dataloader_iter)
+                scored.clear()
+                self.run_iter(idx, data_batch)
+                if len(scored) != 1:
+                    raise RuntimeError(
+                        f"the data preprocessor ran {len(scored)} times on one test batch; "
+                        f"KID needs the one batch the model was scored on"
+                    )
+                fake = _as_loaded(dp, scored[0], data_batch["inputs"])
+                self.kid.update(fake.to(get_device()), real=False)
+        finally:
+            handle.remove()
 
         kid_result = self.kid.compute()
         metrics = self.evaluator.evaluate(int(max_iter * self.dataloader.batch_size))
@@ -599,3 +619,22 @@ class SubsetTestLoop(TestLoop):
         self.runner.call_hook("after_test")
         metrics["kid"] = kid_result
         return metrics
+
+
+def _as_loaded(dp, inputs: torch.Tensor, loaded: Sequence[torch.Tensor]) -> torch.Tensor:
+    """The preprocessor's output back in the form the dataloader loaded it, which is the
+    form KID's real features were taken in: uint8, the loaded channel order (mmcv's BGR;
+    the preprocessor's ``bgr_to_rgb`` is undone) and the loaded size (``stack_batch``'s
+    test-time padding, at the bottom and right, is cropped). With a clean eval slot this
+    gives back ``loaded`` exactly."""
+    mean, std = _mean_std(dp)
+    images = (inputs.float() * std + mean).round().clamp(0, 255).to(torch.uint8)
+    if getattr(dp, "channel_conversion", False):
+        images = images[:, [2, 1, 0]]
+    h, w = loaded[0].shape[-2:]
+    if images.shape[-2] < h or images.shape[-1] < w:
+        raise RuntimeError(
+            f"the preprocessor's output is {tuple(images.shape[-2:])}, smaller than the "
+            f"loaded images ({h}, {w}); KID can't compare them"
+        )
+    return images[..., :h, :w].contiguous()

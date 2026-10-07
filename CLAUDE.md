@@ -237,10 +237,15 @@ ImageFolder, but never with timm (not in `sensAug`).
 | `register.py` | imports `hooks`, `loops` and `transforms` so the registries see them |
 | `config.py` | `build(cfg, work_dir)`: the mmengine config from the composed one (Sensaug's `build_config`). The task's .py is the model and optimizer; the dataset yaml gives the pipelines and the crop (also `data_preprocessor.size`, which pads training and probe batches, as every Sensaug config did). Sensaug's per-(backbone, dataset) file differences come in through `configs/recipe/<task>_<dataset>.yaml`, which `configs/train.yaml` selects automatically (`optional recipe: ${task}_${dataset}`). There is one for every pair Sensaug could train (7 backbones × cityscapes / ade20k / pascal_voc12 / loveda / potsdam / synapse / a2i2haze, 5 on acdc, vitsam on cityscapes: 55), and each was checked (a scratchpad diff, no test) against Sensaug's resolved config: model, optimizer, schedule, max_iters, dataloaders, auto_scale_lr, pad size. They differ only in num_classes. Sensaug's file pick changes the model on some pairs: pspnet and deeplabv3plus become R50 on ade20k (pspnet on pascal_voc12 too), and vit becomes DeiT-B/16 on every dataset except cityscapes. On fallback pairs (no `*<dataset>*` file) it trains 320k iterations, and convnext and deeplabv3plus there pad 512×512 crops to 512×1024. Sensaug's deeplabv3plus on pascal_voc12 kept 19 classes against 21 labels, so it cannot have trained. Sensaug could not build swin/mae on acdc or any backbone on idd (no `_base_/datasets/acdc.py` / `idd.py` for its fallback), so those have no recipe; idd stays eval-only. Two dataset properties travel with the dataset yaml rather than a recipe: synapse's `mmseg.val_evaluator` (mIoU + mDice) and ACDC's `sa_ratio: 1.0` (Sensaug's SA `eval_ratio`, read by `configs/sa/default.yaml`). Sensaug's LoveDA `cfg.optimizer.lr *= 0.1` is not ported: it never reached `optim_wrapper`, so Sensaug's LoveDA runs trained at the full lr |
 
-`loops.py` keeps two Sensaug behaviours on purpose. `descending_MA` is unchanged. KID
-reads `data_batch["inputs"]`, but the eval slot applies the op later, in the
-preprocessor, so KID compares the clean subset with itself, as in every Sensaug diff32
-run. It fixes two Sensaug bugs. The resume: Sensaug's round counter was set before
+`loops.py` keeps one Sensaug behaviour on purpose: `descending_MA` is unchanged. It
+fixes three Sensaug bugs. KID: Sensaug's read `data_batch["inputs"]`, but the eval slot
+applies the op later, in the preprocessor, so from Sensaug `cc1e403` (2026-08-16) on,
+every diff32 run's KID compared the clean subset with itself and the curve's KID term
+was noise. `SubsetTestLoop` now hooks the preprocessor's output (what the model was
+scored on) and hands KID that, back in the loaded form (uint8, BGR, the loaded size).
+Still Sensaug's, and open: KID sees mmcv's BGR (Inception expects RGB), and its
+`subset_size=4` estimator, whose noise a stand-in check found larger than a mild op's
+whole KID. The resume: Sensaug's round counter was set before
 `load_or_resume`, so it was always 0. And the eval slot: Sensaug never cleared it
 before a clean evaluation (its reset took the CPU branch), so from the first SA round
 its "clean" val mIoU, the `save_best` checkpoint and the curve's `miou_base` at rounds
