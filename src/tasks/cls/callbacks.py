@@ -39,9 +39,12 @@ import numpy as np
 import torch.distributed as dist
 
 import probe
+import sa
 import stats
 from selection import build_selector, decide, measured_red, ramp_lambda, redundancy_of
 from vocab import get_op
+
+from ..magnitudes import probe_magnitudes
 
 __all__ = ["ApplyWeightsCallback", "CollectGradientCallback"]
 
@@ -64,12 +67,20 @@ class CollectGradientCallback:
 
     magnitude    a float is one STRENGTH in [0, 1] for every op; a mapping gives each
                  op its own magnitude in its own units (as in the mmseg hook)
+    magnitude_mode
+                 ``"fixed"`` always probes at ``magnitude``. Any other mode probes a
+                 host with magnitude bins of its own (randaugment, trivialaugment,
+                 autoaugment) at them (``tasks.magnitudes``); there is no SA loop
+                 here, so every other host uses ``magnitude``
     n_probe      images in the probe set; None sweeps the whole dataset
     probe_seed   picks the subset and pins each op's randomness
     batch_size   images per forward, and the bootstrap's cluster. Larger than the
                  mmseg default of 1: class labels always stack, and a classifier's
                  backward is cheap.
     fd_step      finite-difference step for ops autograd can't differentiate
+    fade         the ops faded in instead (``probe.fade``): None, ``"non_differentiable"``
+                 or a list of op names
+    fade_at      the ``a`` a faded op's row is taken at (1 = the augmented image)
     """
 
     def __init__(
@@ -82,16 +93,24 @@ class CollectGradientCallback:
         batch_size: int = 16,
         fd_step=probe.DEFAULT_STEP,
         num_workers: int = 0,
+        magnitude_mode: str = sa.MODE_MODAL,
+        fade=None,
+        fade_at: float = 1.0,
     ):
         if isinstance(magnitude, Mapping):
-            self.magnitudes = probe.Magnitudes.fixed(dict(magnitude))
+            fallback = probe.Magnitudes.fixed(dict(magnitude))
         else:
-            self.magnitudes = probe.Magnitudes.relative(float(magnitude))
+            fallback = probe.Magnitudes.relative(float(magnitude))
         self.backend = backend
         self.host = host
         self.ops = {name: get_op(name) for name in host.vocabulary()}
-        # Draw once now, so a bad magnitude fails at construction, not at the first probe.
+        self.magnitudes = probe_magnitudes(host, None, magnitude_mode, fallback)
+        self.fade = fade
+        self.fade_at = probe.check_fade_at(fade_at)
+        # Draw once now, so a bad magnitude or fade fails at construction, not at the first probe.
+        fallback.draw(self.ops, 1, np.random.default_rng(0))
         self.magnitudes.draw(self.ops, 1, np.random.default_rng(0))
+        self.faded = probe.faded_ops(self.ops, fade)
         self.n_probe = n_probe
         self.probe_seed = probe_seed
         self.batch_size = batch_size
@@ -122,8 +141,10 @@ class CollectGradientCallback:
                 self.max_iters,
             )
         logger.info(
-            "[probe] %d ops, probe set %s (%d images of %s), magnitudes %s/%s",
+            "[probe] %d ops (%d faded at a=%g), probe set %s (%d images of %s), magnitudes %s/%s",
             len(self.ops),
+            len(self.faded),
+            self.fade_at,
             self.probe_set.digest[:12],
             len(self.probe_set),
             self.data.source,
@@ -150,6 +171,8 @@ class CollectGradientCallback:
             num_workers=self.num_workers,
             log_path=self.log_path if _main() else None,
             meta={"iter": iteration, "role": role},
+            fade=self.fade,
+            fade_at=self.fade_at,
         )
 
 

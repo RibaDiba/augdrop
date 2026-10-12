@@ -7,6 +7,9 @@
     cls/         image classifiers (timm, torchvision, any nn.Module): the backend,
                  clean ImageFolder / CIFAR readers, and the two hooks as callbacks
                  for a hand-written loop
+    augment.py   training-time draws from a host, shared by both backends
+    magnitudes.py  the probe's magnitudes for a host (each method's own intensity),
+                 shared by both backends and scripts/probe.py
 
 A backend package imports its framework lazily, so ``import tasks`` needs none of
 them. ``build_backend(name, **kwargs)`` imports the one asked for.

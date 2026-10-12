@@ -15,9 +15,10 @@ dropping nothing. Excluding a real op that the selection does not contain is
 fine.
 """
 
-from typing import Dict, Iterable, Mapping, Optional
+import functools
+from typing import Dict, Iterable, Mapping, Optional, Tuple
 
-from .families import FAMILIES
+from .families import BINS, FAMILIES
 from .op import OpSpec
 
 # Sensaug's 32-op DIFF32_OPS, in its order: the vocabulary every Sensaug R was
@@ -47,6 +48,21 @@ def get_op(name: str) -> OpSpec:
         return OPS[name]
     except KeyError:
         raise KeyError(f"unknown op {name!r}; known ops: {sorted(OPS)}") from None
+
+
+@functools.lru_cache(maxsize=None)
+def magnitude_bins(name: str, num_bins: int) -> Tuple[Tuple[float, ...], bool]:
+    """``(magnitudes, signed)``: the ``num_bins`` magnitudes op ``name``'s method draws
+    from, in the op's own units, and whether the method negates them (mirrored about
+    ``identity_at``) with p = 0.5. torchvision's own table; only the torchvision
+    families have one."""
+    get_op(name)
+    if name not in BINS:
+        raise KeyError(
+            f"op {name!r} has no magnitude bins: only the torchvision families' ops with a "
+            f"magnitude have one ({sorted(BINS)[:3]}...)"
+        )
+    return BINS[name](int(num_bins))
 
 
 def _check_names(names: Iterable[str], key: str) -> None:

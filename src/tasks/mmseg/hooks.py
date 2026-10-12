@@ -13,7 +13,8 @@ so their priorities are load-bearing: NORMAL (50) runs before LOW (70).
 
 With the SA loop (``loops.RobustValLoop``) the split is Sensaug's: the hooks publish,
 and the loop applies. CollectGradientHook probes at the magnitudes the loop last
-published (``runner.corr_magnitudes``), and ApplyWeightsHook keeps the latest R for
+published (``runner.corr_magnitudes``; another host's are its own,
+``tasks.magnitudes``), and ApplyWeightsHook keeps the latest R for
 the loop to re-apply to every round's fresh pdf (``reweight``) at that round's lambda.
 The val loop runs after ``after_train_iter`` on a shared iteration, so a probe that
 fires one hook point before an SA round reaches that round's pdf.
@@ -55,6 +56,7 @@ import stats
 from selection import CLEAR, KEEP, Redundancy, build_selector, measured_red, publication, ramp_lambda
 from vocab import get_op
 
+from ..magnitudes import probe_magnitudes
 from .backend import MMSegBackend, unwrap
 
 __all__ = ["ApplyWeightsHook", "CollectGradientHook", "host_of"]
@@ -99,13 +101,18 @@ class CollectGradientHook(Hook):
                  snapshot (``runner.corr_magnitudes``): ``"mode"`` (Sensaug's default,
                  each op at its modal SA level), ``"sampled_shared"``,
                  ``"sampled_independent"``, or ``"fixed"`` (always ``magnitude``).
-                 See ``sa.magnitudes``. Read once per sweep.
+                 See ``sa.magnitudes``. Read once per sweep. A host with magnitude bins
+                 of its own (randaugment, trivialaugment, autoaugment) is probed at
+                 them in every mode but ``"fixed"`` (``tasks.magnitudes``).
     n_probe      images in the probe set; None sweeps the whole split, as Sensaug did
     probe_seed   picks the subset and pins each op's randomness (``noise``)
     batch_size   images per forward, and the bootstrap's cluster. 1 is Sensaug's
                  default and the only size that stacks labels of mixed native sizes.
     fd_step      finite-difference step for ops autograd can't differentiate
     split        the dataloader config the probe reads ("val" or "test")
+    fade         the ops faded in instead (``probe.fade``): None, ``"non_differentiable"``
+                 or a list of op names. The host's ``fade:`` config block.
+    fade_at      the ``a`` a faded op's row is taken at (1 = the augmented image)
 
     The probe set is saved to ``work_dir/probe_set.json`` and, on resume, reloaded and
     checked against the dataset, so every G of one run is on the same images.
@@ -123,6 +130,8 @@ class CollectGradientHook(Hook):
         fd_step=probe.DEFAULT_STEP,
         num_workers: int = 0,
         split: str = "val",
+        fade=None,
+        fade_at: float = 1.0,
     ):
         if isinstance(magnitude, Mapping):
             self.magnitudes = probe.Magnitudes.fixed(dict(magnitude))
@@ -137,12 +146,17 @@ class CollectGradientHook(Hook):
         self.fd_step = fd_step
         self.num_workers = num_workers
         self.split = split
+        self.fade = fade
+        self.fade_at = probe.check_fade_at(fade_at)
 
     def before_run(self, runner) -> None:
         self.host = host_of(runner)
         self.ops = {name: get_op(name) for name in self.host.vocabulary()}
-        # Draw once now, so a bad magnitude fails at startup and not at the first probe.
-        self.magnitudes.draw(self.ops, 1, np.random.default_rng(0))
+        # Draw once now, so a bad magnitude or fade fails at startup, not at the first probe.
+        rng = np.random.default_rng(0)
+        self.magnitudes.draw(self.ops, 1, rng)
+        probe_magnitudes(self.host, None, self.magnitude_mode, self.magnitudes).draw(self.ops, 1, rng)
+        faded = probe.faded_ops(self.ops, self.fade)
 
         self.backend = MMSegBackend.from_runner(runner, split=self.split)
         self.data = self.backend.probe_data()
@@ -171,10 +185,15 @@ class CollectGradientHook(Hook):
                 level=30,
             )
         print_log(
-            f"[probe] {len(self.ops)} ops, probe set {self.probe_set.digest[:12]} "
-            f"({len(self.probe_set)} images of {self.data.source}), magnitudes "
-            f"{self.magnitude_mode} from the SA snapshot once there is one, else "
-            f"{self.magnitudes.source}/{self.magnitudes.mode}",
+            f"[probe] {len(self.ops)} ops ({len(faded)} faded at a={self.fade_at:g}), probe set "
+            f"{self.probe_set.digest[:12]} ({len(self.probe_set)} images of {self.data.source}), "
+            f"magnitudes {self.magnitude_mode}: "
+            + (
+                f"the {self.host.name} host's own bins"
+                if self.magnitude_mode != sa.MODE_FIXED and self.host.num_magnitude_bins is not None
+                else f"from the SA snapshot once there is one, else "
+                f"{self.magnitudes.source}/{self.magnitudes.mode}"
+            ),
             logger="current",
         )
 
@@ -185,8 +204,8 @@ class CollectGradientHook(Hook):
             return
         # Whatever the SA loop published last, read once so the whole sweep is at one
         # set of magnitudes. Empty before the first SA round: the fallback.
-        magnitudes = sa.probe_magnitudes(
-            getattr(runner, "corr_magnitudes", None) or {}, self.magnitude_mode, self.magnitudes
+        magnitudes = probe_magnitudes(
+            self.host, getattr(runner, "corr_magnitudes", None), self.magnitude_mode, self.magnitudes
         )
         # A safe point: train_step already ran backward, step and zero_grad, and
         # torch.autograd.grad populates no parameter .grad anyway.
@@ -203,6 +222,8 @@ class CollectGradientHook(Hook):
             num_workers=self.num_workers,
             log_path=self.log_path if is_main_process() else None,
             meta={"iter": iteration, "role": role},
+            fade=self.fade,
+            fade_at=self.fade_at,
         )
 
 

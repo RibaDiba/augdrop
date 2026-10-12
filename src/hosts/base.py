@@ -8,6 +8,11 @@ questions for the training loop:
 - ``set_weights(q)``    install a new per-op distribution, e.g. a redundancy tilt
 - ``should_probe(it)``  whether the gradient probe runs after training iteration ``it``
 
+and, for a method with a magnitude policy of its own (the torchvision methods), one
+more, for the probe:
+
+- ``draw_bins(B, rng)`` which magnitude bin the method would apply each op at, per image
+
 Applying the ops to images is not the host's job, and neither is the probe. Both
 key off ``vocabulary()`` names. Pure numpy, no torch, so every host is testable
 without a GPU.
@@ -25,13 +30,23 @@ Two conventions every host shares:
 """
 
 from collections.abc import Mapping
-from typing import ClassVar, Iterable, Optional, Sequence, Tuple, Union
+from typing import ClassVar, Dict, Iterable, Optional, Sequence, Tuple, Union
 
 import numpy as np
 
-__all__ = ["AugHost", "resolve_gate"]
+__all__ = ["AugHost", "draw_flips", "resolve_gate"]
 
 Weights = Union[Mapping, Sequence[float], np.ndarray]
+
+#: ``({op: (B,) bin index}, {op: (B,) negate?})``, what ``draw_bins`` returns.
+Bins = Tuple[Dict[str, np.ndarray], Dict[str, np.ndarray]]
+
+
+def draw_flips(names: Sequence[str], batch_size: int, rng: np.random.Generator) -> Dict[str, np.ndarray]:
+    """Per op and image, whether the method negates a signed op's magnitude: p = 0.5,
+    as torchvision's auto-augment methods do. Drawn for every op; an unsigned op
+    ignores it."""
+    return {name: rng.random(batch_size) < 0.5 for name in names}
 
 
 def resolve_gate(
@@ -77,6 +92,10 @@ class AugHost:
 
     #: The key train.py selects this host by. Set on every subclass.
     name: ClassVar[str] = ""
+
+    #: How many magnitude bins ``draw_bins`` indexes, or None for a host with no
+    #: magnitude policy of its own (``draw_bins`` then returns None).
+    num_magnitude_bins: Optional[int] = None
 
     def __init__(
         self,
@@ -161,6 +180,17 @@ class AugHost:
         Identity here. Hosts whose sampling unit is not a single op override it.
         """
         return q
+
+    def draw_bins(self, batch_size: int, rng: np.random.Generator) -> Optional[Bins]:
+        """The magnitudes the method itself would apply, for the probe: per image, a bin
+        index into ``num_magnitude_bins`` for each op, and whether a signed op is
+        negated. An op with no magnitude may be listed and is ignored. None for a host
+        with no magnitude policy of its own (the probe uses its configured magnitude).
+
+        The method's distribution, not the current q: q changes which op is drawn, and
+        the probe's magnitudes must not follow the last q around.
+        """
+        return None
 
     # --- the probe schedule ----------------------------------------------------
 

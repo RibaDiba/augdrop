@@ -8,3 +8,10 @@ name: autoaugment
 probe_interval: ${probe.schedule.interval}
 probe_iters: ${probe.schedule.iters}
 control_iters: ${probe.schedule.control_iters}
+# Which ops the probe fades in (probe/fade.py), at this method's own magnitude: per op,
+# a bin drawn from the bins IMAGENET_POLICY (src/hosts/autoaugment.py) applies it at,
+# weighted by each step's probability, sign at random. AutoContrast, Equalize and Invert
+# have no magnitude; faded, they get a row instead of NaN. See randaugment.yaml.
+fade:
+  ops: non_differentiable
+  at: 1.0

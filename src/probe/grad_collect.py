@@ -21,6 +21,18 @@ Why the probe is shaped this way. Each of these was a real bug in Sensaug:
   label themselves; the probe checks that they did.
 - An op's randomness (``noise``) is pinned per op. Every batch then sees the same
   sample, and so do both sides of a finite difference.
+
+An op autograd can't differentiate is measured through its exact ``tangent`` when the
+vocab gives one (torchvision's enhance ops), by finite differences otherwise, or, when
+``resolve_methods`` selects it, by fading it in (fade.py), which also gives an op with
+no magnitude a row.
+
+Every row except a faded one is ``d loss / d strength``: ``d loss / d magnitude`` times
+``strength_sign``, the side of ``identity_at`` the image's magnitude is on. A method
+that negates a signed op at random (torchvision's) puts some images below the
+identity, where a larger magnitude is a weaker augmentation, and their rows would
+otherwise enter R with the opposite sign. A fade row is along the augmentation
+already. On Sensaug's [0, 1] ops the sign is +1, so their rows are unchanged.
 """
 
 import contextlib
@@ -32,14 +44,16 @@ import numpy as np
 import torch
 from torch import Tensor
 
+from .fade import FADE, Fade, check_fade_at, fade_alpha, fade_images, faded_ops
 from .finite_diff import DEFAULT_STEP, fd_grad
 
 logger = logging.getLogger(__name__)
 
-# How each op's row of G is measured.
+# How each op's row of G is measured. The fifth, FADE, is fade.py's.
 AUTOGRAD = "autograd"
+TANGENT = "tangent"  # through the vocab op's exact derivative (OpSpec.tangent)
 FINITE_DIFF = "finite_diff"
-UNPROBED = "unprobed"  # the op has no magnitude; its row is NaN
+UNPROBED = "unprobed"  # the op has no magnitude and isn't faded; its row is NaN
 
 # to_unit may round-trip through a normalization, so allow float slop around [0, 1].
 _UNIT_SLACK = 1e-3
@@ -71,11 +85,41 @@ class ModelAdapter(Protocol):
 
 
 def op_method(op) -> str:
-    """How ``op``'s row is measured: ``"autograd"``, ``"finite_diff"`` (vocab
-    ``grad_mode="none"``), or ``"unprobed"`` (no magnitude to differentiate)."""
+    """How ``op``'s row is measured when it isn't faded: ``"autograd"``, ``"tangent"``
+    (vocab ``grad_mode="none"`` with a ``tangent``), ``"finite_diff"`` (the other
+    ``grad_mode="none"`` ops), or ``"unprobed"`` (no magnitude to differentiate)."""
     if getattr(op, "mag_range", None) is None:
         return UNPROBED
-    return AUTOGRAD if op.grad_mode == "autograd" else FINITE_DIFF
+    if op.grad_mode == "autograd":
+        return AUTOGRAD
+    return TANGENT if getattr(op, "tangent", None) is not None else FINITE_DIFF
+
+
+def far_end(op) -> float:
+    """The end of ``op.mag_range`` farther from ``identity_at``, the direction the op
+    strengthens in; ``hi`` on a tie. That matches torchvision's auto-augment bins:
+    Solarize and Posterize (identity at the top of the range) strengthen downward, and
+    a symmetric signed op like Rotate strengthens in its positive direction."""
+    lo, hi = op.mag_range
+    anchor = op.identity_at
+    # A tie up to float error is a tie: 1.0 - 0.1 exceeds 1.9 - 1.0 by one ulp.
+    below_is_farther = (anchor - lo) - (hi - anchor) > 1e-9 * (hi - lo)
+    return lo if below_is_farther else hi
+
+
+def strength_sign(op, magnitude: np.ndarray) -> np.ndarray:
+    """Per image, d magnitude / d strength: +1 above ``identity_at``, -1 below, and the
+    direction of ``far_end`` at the identity itself."""
+    side = np.sign(np.asarray(magnitude, dtype=np.float64) - op.identity_at)
+    side[side == 0] = 1.0 if far_end(op) > op.identity_at else -1.0
+    return side
+
+
+def resolve_methods(ops: Mapping[str, Any], fade: Fade = None) -> dict[str, str]:
+    """How each op's row is measured: ``"fade"`` for the ops ``fade`` selects (see
+    fade.py), ``op_method`` for the rest."""
+    faded = set(faded_ops(ops, fade))
+    return {name: FADE if name in faded else op_method(op) for name, op in ops.items()}
 
 
 def op_seed(probe_seed: int, name: str) -> int:
@@ -179,18 +223,26 @@ def collect_grads(
     probe_seed: int = 0,
     fd_step: FdStep = DEFAULT_STEP,
     check: bool = False,
+    methods: Optional[Mapping[str, str]] = None,
+    fade_at: float = 1.0,
 ) -> dict[str, np.ndarray]:
     """Probe every op on ONE shared clean batch.
 
     Returns ``{op name: (B,) float64 array}``, the batch's segment of each row of G,
     for every op in ``ops``. Every op sees the same clean images, so the columns line
-    up across ops. An op with no magnitude gets a NaN row: it stays in G, so G's
-    shape doesn't depend on the vocab, and it can't be mistaken for a zero gradient.
+    up across ops. An unprobed op (no magnitude, not faded) gets a NaN row: it stays
+    in G, so G's shape doesn't depend on the vocab, and it can't be mistaken for a
+    zero gradient.
 
     ``magnitudes[name]`` is a scalar or a (B,) array in the op's own units, within its
     ``mag_range``. Ops with no magnitude need no entry. ``fd_step`` is the
     finite-difference step as a fraction of each op's range width, one value for all
     ops or a mapping per op (a quantized op needs a step wider than one bin).
+
+    ``methods`` is ``resolve_methods(ops, fade)``; None is ``op_method`` for every op.
+    A ``"fade"`` op's row is ``d loss / d a`` at ``a = fade_at``, toward the op at its
+    magnitude (see fade.py). Every other row is ``d loss / d strength``: the
+    derivative in the magnitude times ``strength_sign`` (see the module docstring).
 
     The model must already be in eval mode. The torch RNG state is restored on return.
 
@@ -202,6 +254,10 @@ def collect_grads(
     require_eval(adapter.model)
     images01, label = unit_batch(adapter, batch)
     batch_size = int(images01.shape[0])
+    if methods is None:
+        methods = {name: op_method(op) for name, op in ops.items()}
+    if FADE in methods.values():
+        fade_at = check_fade_at(fade_at)
 
     rows = {}
     with preserved_rng():
@@ -219,13 +275,28 @@ def collect_grads(
                 )
 
         for name, op in ops.items():
-            method = op_method(op)
+            method = methods[name]
             if method == UNPROBED:
                 rows[name] = np.full(batch_size, np.nan)
                 continue
 
-            magnitude = _batch_magnitude(name, op, magnitudes, batch_size)
             seed = op_seed(probe_seed, name)
+            if method == FADE:
+                magnitude = (
+                    _batch_magnitude(name, op, magnitudes, batch_size)
+                    if getattr(op, "mag_range", None) is not None
+                    else None
+                )
+                target, label_out = _fade_target(name, op, images01, label, magnitude, seed)
+                if check and per_image and batch_size > 1:
+                    evaluate = _fade_evaluator(adapter, name, images01, target, label_out, batch)
+                    alpha = np.full(batch_size, fade_at)
+                    _check_independence(evaluate, name, alpha, fd_step_for(fd_step, name), 0.0, 1.0)
+                grad = _fade_row(adapter, name, images01, target, label_out, batch, fade_at)
+                rows[name] = _finalize(name, grad, batch_size)
+                continue
+
+            magnitude = _batch_magnitude(name, op, magnitudes, batch_size)
             lo, hi = op.mag_range
             step = fd_step_for(fd_step, name) * (hi - lo)
             evaluate = _evaluator(adapter, name, op, images01, label, batch, seed)
@@ -235,9 +306,11 @@ def collect_grads(
 
             if method == AUTOGRAD:
                 grad = _autograd_row(adapter, name, op, images01, label, batch, magnitude, seed)
+            elif method == TANGENT:
+                grad = _tangent_row(adapter, name, op, images01, label, batch, magnitude, seed)
             else:
                 grad = fd_grad(evaluate, magnitude, step=step, lo=lo, hi=hi)
-            rows[name] = _finalize(name, grad, batch_size)
+            rows[name] = _finalize(name, grad, batch_size) * strength_sign(op, magnitude)
     return rows
 
 
@@ -291,15 +364,82 @@ def _autograd_row(adapter, name, op, images01, label, batch, magnitude, seed) ->
     return grad
 
 
+def _tangent_row(adapter, name, op, images01, label, batch, magnitude, seed) -> Tensor:
+    """``d loss_i / d m_i`` through the op's exact derivative: the loss at
+    ``op(x, m) + delta * op.tangent(x, m)``, differentiated in ``delta`` at 0. The images
+    the model sees are the op's own output; only the direction comes from the tangent."""
+    target, label_out = _fade_target(name, op, images01, label, magnitude, seed)
+    torch.manual_seed(seed)
+    with torch.no_grad():
+        direction = op.tangent(
+            images01, torch.as_tensor(magnitude, dtype=images01.dtype, device=images01.device)
+        )
+    if not torch.is_tensor(direction) or direction.shape != images01.shape:
+        raise ProbeError(
+            f"op {name!r}: its tangent must be shaped like the images "
+            f"{tuple(images01.shape)}, got {tuple(getattr(direction, 'shape', ()))}"
+        )
+    direction = direction.detach().to(images01.device, images01.dtype)
+    delta = torch.zeros(
+        images01.shape[0], dtype=images01.dtype, device=images01.device, requires_grad=True
+    )
+    moved = target + delta.view(-1, *([1] * (images01.dim() - 1))) * direction
+    loss = _loss(adapter, moved, label_out, batch, images01.shape[0], name)
+    # Summed for the same reason as _autograd_row: term i depends on delta[i] alone.
+    (grad,) = torch.autograd.grad(loss.sum(), delta, allow_unused=True)
+    if grad is None:
+        raise ProbeError(f"op {name!r}: the loss does not depend on the tangent")
+    return grad
+
+
+def _fade_target(name, op, images01, label, magnitude, seed):
+    """``op(x, m)`` and its label, under no_grad: the end of a fade, the base of a
+    tangent. ``magnitude`` is None for an op with no magnitude."""
+    if magnitude is not None:
+        magnitude = torch.as_tensor(magnitude, dtype=images01.dtype, device=images01.device)
+    with torch.no_grad():
+        target, label_out = apply_op(name, op, images01, label, magnitude, seed)
+    return target.detach(), label_out
+
+
+def _fade_row(adapter, name, images01, target, label, batch, at) -> Tensor:
+    alpha = fade_alpha(at, images01, requires_grad=True)
+    faded = fade_images(images01, target, alpha)
+    loss = _loss(adapter, faded, label, batch, images01.shape[0], name)
+    # Summed for the same reason as _autograd_row: term i depends on alpha[i] alone.
+    (grad,) = torch.autograd.grad(loss.sum(), alpha, allow_unused=True)
+    if grad is None:
+        raise ProbeError(f"op {name!r}: the loss does not depend on the fade")
+    return grad
+
+
+def _fade_evaluator(adapter, name, images01, target, label, batch):
+    """alpha (B,) -> per-image losses (B,), under no_grad."""
+
+    def perturb(alpha: Tensor):
+        return fade_images(images01, target, alpha), label
+
+    return _losses(adapter, name, images01, batch, perturb)
+
+
 def _evaluator(adapter, name, op, images01, label, batch, seed):
     """magnitude (B,) -> per-image losses (B,), under no_grad. Every call reseeds the
     op, so repeated evaluations share one random sample."""
+
+    def perturb(delta: Tensor):
+        return apply_op(name, op, images01, label, delta, seed)
+
+    return _losses(adapter, name, images01, batch, perturb)
+
+
+def _losses(adapter, name, images01, batch, perturb):
+    """values (B,) -> the per-image losses of ``perturb(values)``, under no_grad."""
     batch_size = images01.shape[0]
 
-    def evaluate(magnitude: np.ndarray) -> np.ndarray:
-        delta = torch.as_tensor(magnitude, dtype=images01.dtype, device=images01.device)
+    def evaluate(values: np.ndarray) -> np.ndarray:
+        values = torch.as_tensor(values, dtype=images01.dtype, device=images01.device)
         with torch.no_grad():
-            perturbed, label_out = apply_op(name, op, images01, label, delta, seed)
+            perturbed, label_out = perturb(values)
             loss = _loss(adapter, perturbed, label_out, batch, batch_size, name)
         if loss.dim() == 0:
             if batch_size > 1:

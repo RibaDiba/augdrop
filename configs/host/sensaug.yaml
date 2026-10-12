@@ -16,3 +16,8 @@ corr_rounds: null          # explicit firing rounds instead of the derived ones
 control_rounds: null
 pre_train_round: ${sa.init_sa}   # follows sa.init_sa: the host and the train loop must agree
 probe_interval: null       # a fixed clock instead of the round grid (Sensaug's --corr-interval)
+# Which ops the probe fades in (probe/fade.py; see randaugment.yaml). Off: the DIFF32
+# ops are all differentiable.
+fade:
+  ops: null
+  at: 1.0

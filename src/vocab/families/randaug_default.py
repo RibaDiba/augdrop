@@ -30,7 +30,9 @@ torchvision's public functionals in tests/vocab/test_families.py.
 Only the ops are here, not the method: sampling N ops at a shared magnitude M
 is RandAugment the policy, and belongs with the other methods. (Note for later:
 torchvision's default magnitude=9 indexes 31 bins, i.e. 9/30 of each range, not
-the paper's 9/10.)
+the paper's 9/10.) What the ops do know is the bins a method draws their magnitude
+from: `BINS` reads them off torchvision's own table (`_AUGMENTATION_SPACE`) in these
+units, so a host can say "bin 9 of 31" and the probe can apply exactly that.
 
 Implementation: each op calls torchvision.transforms.v2's own per-op dispatcher
 (`_apply_image_or_video_transform`), the code path RandAugment itself runs,
@@ -40,6 +42,10 @@ and returned as float in [0, 1], so it is exact on 8-bit-representable input and
 carries no gradient (grad_mode "none"). Geometric ops replay the same transform
 on the label, nearest-neighbour, out-of-frame -> 255, as Sensaug's
 label_safe_transforms.py does.
+
+The four enhance ops also carry an exact `tangent` (`enhance_tangent`), which the
+probe differentiates through instead of taking finite differences. The images are
+still torchvision's; only the derivative's direction is computed here.
 """
 
 from typing import Callable, Dict, Optional, Sequence, Tuple
@@ -47,6 +53,7 @@ from typing import Callable, Dict, Optional, Sequence, Tuple
 import torch
 from torchvision.transforms import InterpolationMode
 from torchvision.transforms.v2 import RandAugment
+from torchvision.transforms.v2.functional import rgb_to_grayscale
 
 from ..diff_ops import LABEL_IGNORE_INDEX
 from ..op import OpSpec
@@ -94,6 +101,10 @@ RANGES: Dict[str, Optional[Tuple[Tuple[float, float], float]]] = {
 
 ToNative = Callable[[float, int, int], float]
 
+#: num_bins -> (each bin's magnitude in the op's units, signed). A signed op is negated
+#: with p = 0.5 by the method, i.e. mirrored about identity_at.
+BinTable = Callable[[int], Tuple[Tuple[float, ...], bool]]
+
 
 def native_magnitude(transform_id: str, translate_ref: Optional[float]) -> ToNative:
     """Paper units -> the magnitude torchvision's dispatcher takes, as a function
@@ -116,6 +127,56 @@ def native_magnitude(transform_id: str, translate_ref: Optional[float]) -> ToNat
     return lambda m, h, w: m
 
 
+def paper_magnitude(transform_id: str) -> Callable[[float], float]:
+    """The inverse of `native_magnitude` on an image of the reference size: the
+    magnitude torchvision's dispatcher takes -> the paper's units."""
+    if transform_id in ENHANCE_IDS:
+        return lambda v: v + 1.0
+    if transform_id == "Solarize":
+        return lambda v: v * 255.0
+    # Rotate, ShearX/Y, Posterize; translates at the reference size, or absolute.
+    return lambda v: v
+
+
+def build_bins(
+    family: str,
+    method_cls,
+    ranges: Dict[str, Optional[Tuple[Tuple[float, float], float]]],
+    translate_ref: Optional[float],
+    op_order: Sequence[str] = OP_ORDER,
+) -> Dict[str, BinTable]:
+    """One `BinTable` per op with a magnitude: the bins torchvision's `method_cls`
+    draws that op's magnitude from, read off its `_AUGMENTATION_SPACE` (not re-derived)
+    and put in the op's units.
+
+    The table is evaluated on a reference-size image, where torchvision's translate
+    in pixels equals the paper's (TrivialAugment's translate is absolute and ignores
+    the size). torchvision builds the bins in float32, so an end bin can overshoot the
+    range by round-off (0.3 is 0.30000001); that is clipped, and anything larger
+    raises."""
+    size = int(AA_IMAGE_SIZE if translate_ref is None else translate_ref)
+    space = method_cls._AUGMENTATION_SPACE
+    tables = {}
+    for transform_id in op_order:
+        if ranges[transform_id] is None:
+            continue
+        (lo, hi), _ = ranges[transform_id]
+        magnitudes_fn, signed = space[transform_id]
+        to_paper = paper_magnitude(transform_id)
+        name = f"{family}.{transform_id}"
+
+        def table(num_bins, magnitudes_fn=magnitudes_fn, signed=signed, to_paper=to_paper, lo=lo, hi=hi, name=name):
+            values = [to_paper(float(v)) for v in magnitudes_fn(num_bins, size, size)]
+            slack = 1e-6 * (hi - lo)
+            outside = [v for v in values if not lo - slack <= v <= hi + slack]
+            if outside:
+                raise ValueError(f"{name}: torchvision's bins {outside} are outside mag_range [{lo}, {hi}]")
+            return tuple(min(max(v, lo), hi) for v in values), bool(signed)
+
+        tables[name] = table
+    return tables
+
+
 def _per_image(magnitude, batch_size: int, dtype: torch.dtype) -> Sequence[float]:
     """One python float per image, taken at the images' precision, as the
     differentiable ops take theirs (`diff_ops._as_delta`). Otherwise a python
@@ -136,6 +197,50 @@ def _per_image(magnitude, batch_size: int, dtype: torch.dtype) -> Sequence[float
     return [float(v) for v in m]
 
 
+def _to_pixels(images: torch.Tensor) -> torch.Tensor:
+    """[0, 1] float images -> the uint8 images torchvision's ops run on."""
+    return (images.detach() * 255.0).round().clamp(0.0, 255.0).to(torch.uint8)
+
+
+def enhance_tangent(method, transform_id: str):
+    """The exact d op / d m of an enhance op, as the vocab's (images, magnitude) ->
+    (B, C, H, W) tangent, in [0, 1] image units per unit of the paper's factor.
+
+    torchvision computes each enhance op as a blend, clamp(f * x + (1 - f) * d) cast
+    to uint8, with the factor f = m and a `d` that doesn't depend on f. Before the
+    clamp and the cast the derivative is x - d, and where the clamp holds it is 0.
+    `d` is torchvision's own: the op at factor 0 (black, the floored grayscale, the
+    3x3-blurred image with its border kept), except for Contrast, whose factor-0
+    output truncates the grayscale mean to uint8; there `d` is the float mean of
+    `rgb_to_grayscale`, which is what adjust_contrast blends toward. Checked by hand
+    on all four ops at factors 0.01 to 2.0: clamp(f * x + (1 - f) * d), cast to
+    uint8, equals torchvision's output pixel for pixel.
+    """
+    if transform_id not in ENHANCE_IDS:
+        raise ValueError(f"{transform_id} is not an enhance op {sorted(ENHANCE_IDS)}")
+
+    def tangent(images, magnitude):
+        mags = _per_image(magnitude, images.shape[0], images.dtype)
+        pixels = _to_pixels(images)
+        out = []
+        for i, factor in enumerate(mags):
+            x = pixels[i]
+            if transform_id == "Contrast":
+                d = rgb_to_grayscale(x).float().mean(dim=(-3, -2, -1), keepdim=True)
+            else:
+                # torchvision applies factor = 1.0 + magnitude, so factor 0 is -1.
+                d = method._apply_image_or_video_transform(
+                    x, transform_id, -1.0, method.interpolation, method._fill
+                ).float()
+            x = x.float()
+            blended = x.mul(factor).add_(d, alpha=1.0 - factor)
+            inside = (blended >= 0.0) & (blended <= 255.0)
+            out.append(torch.where(inside, x - d, 0.0) / 255.0)
+        return torch.stack(out).to(images.dtype)
+
+    return tangent
+
+
 def torchvision_op(method, transform_id: str, to_native: Optional[ToNative]):
     """Wrap one op of a torchvision v2 auto-augment `method` instance as the
     vocab's (images, magnitude, label) -> (images, label) call.
@@ -154,7 +259,7 @@ def torchvision_op(method, transform_id: str, to_native: Optional[ToNative]):
                 "differ in size; the warp would not line up"
             )
         mags = _per_image(magnitude, b, images.dtype) if to_native is not None else [None] * b
-        pixels = (images.detach() * 255.0).round().clamp(0.0, 255.0).to(torch.uint8)
+        pixels = _to_pixels(images)
 
         out_images, out_labels = [], []
         for i in range(b):
@@ -210,9 +315,11 @@ def build_ops(
                 grad_mode="none",
                 warps_label=geometric,
                 fn=torchvision_op(method, transform_id, to_native),
+                tangent=enhance_tangent(method, transform_id) if transform_id in ENHANCE_IDS else None,
             )
         )
     return tuple(specs)
 
 
 OPS = build_ops(FAMILY, RandAugment(), RANGES, AA_IMAGE_SIZE, SOURCE)
+BINS = build_bins(FAMILY, RandAugment, RANGES, AA_IMAGE_SIZE)

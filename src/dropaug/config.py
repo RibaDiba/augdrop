@@ -5,7 +5,7 @@ together, and build what each group describes.
     check(cfg, training=)    cross-group checks; raises ConfigError, returns warnings
     save(cfg, work_dir)      <work_dir>/dropaug.yaml, the file probe.py / eval.py rebuild from
     load(work_dir)           ... and back, with dotted overrides on top
-    vocab_of / host_of / selector_spec / magnitudes_of / run_name
+    vocab_of / host_of / fade_of / selector_spec / magnitudes_of / run_name
 
 One experiment is one choice per group (``GROUPS``). What a group's keys mean is in
 its yaml files. What this module adds is the rules that span groups, checked before
@@ -19,6 +19,8 @@ anything is built, so a bad combination fails in seconds rather than hours into 
 - the selector builds with its keys, and the control (``selector=none``) keeps lam 0
 - the probe magnitude is valid for every op of the vocab, and ``probe.magnitude_mode``
   is one of ``sa.MAGNITUDE_MODES``
+- the host's ``fade:`` block (which ops the probe fades in, ``probe.fade``) names a rule
+  or ops of the vocab, and its ``at`` is in [0, 1]
 - the ``sa`` group (the SA loop's knobs) matters only with the sensaug host: elsewhere a
   changed value is warned about. With sensaug, the host's ``pre_train_round`` must equal
   ``sa.init_sa`` (an error: the probe rounds shift otherwise), and ``task.val_interval``
@@ -46,6 +48,7 @@ __all__ = [
     "RUN_FILE",
     "check",
     "compose",
+    "fade_of",
     "group_options",
     "host_of",
     "load",
@@ -199,6 +202,7 @@ def host_kwargs(cfg: DictConfig) -> dict:
     """``build_host`` kwargs, with the vocab passed in to the hosts that take one."""
     kwargs = to_python(cfg.host)
     kwargs.pop("vocab", None)  # the vocab is passed as `vocabulary`, never as a host key
+    kwargs.pop("fade", None)  # the probe's, not the host's: see fade_of
     name = kwargs.pop("name")
     if _takes_vocabulary(name):
         kwargs["vocabulary"] = list(vocab_of(cfg))
@@ -211,6 +215,14 @@ def host_of(cfg: DictConfig):
 
     kwargs = host_kwargs(cfg)
     return build_host(kwargs.pop("name"), **kwargs)
+
+
+def fade_of(cfg: DictConfig) -> tuple:
+    """``(fade, fade_at)`` from the host's ``fade:`` block: which ops the probe fades
+    in (None, a ``probe.FADE_RULES`` rule, or a list of op names) and the ``a`` it
+    differentiates at. No block, or ``ops: null``, fades nothing."""
+    block = to_python(cfg.host.get("fade")) or {}
+    return block.get("ops"), float(block.get("at", 1.0))
 
 
 def selector_spec(cfg: DictConfig) -> dict:
@@ -241,6 +253,7 @@ def check(cfg: DictConfig, *, training: bool) -> List[str]:
     """Raise ConfigError on groups that don't fit together; return the warnings (things
     that run, but not the way the config's names suggest). ``training`` adds the
     checks only a training run needs."""
+    import probe
     from hosts import HOSTS
     from sa import MAGNITUDE_MODES
     from selection import SELECTORS, build_selector
@@ -311,6 +324,12 @@ def check(cfg: DictConfig, *, training: bool) -> List[str]:
             magnitudes_of(cfg.probe.magnitude).draw(vocab_of(cfg), 1, np.random.default_rng(0))
         except (KeyError, ValueError) as error:
             errors.append(f"probe.magnitude={to_python(cfg.probe.magnitude)!r}: {error}")
+        try:
+            fade, fade_at = fade_of(cfg)
+            probe.faded_ops(vocab_of(cfg), fade)
+            probe.check_fade_at(fade_at)
+        except (TypeError, ValueError) as error:
+            errors.append(f"host.fade={to_python(cfg.host.get('fade'))!r}: {error}")
 
     if training and host is not None:
         if cfg.augment:

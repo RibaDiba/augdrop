@@ -11,7 +11,7 @@ from typing import Iterable, Optional
 
 import numpy as np
 
-from .base import AugHost
+from .base import AugHost, draw_flips
 from .randaugment import family_ops
 
 __all__ = ["TrivialAugmentHost"]
@@ -46,3 +46,12 @@ class TrivialAugmentHost(AugHost):
             probe_iters=probe_iters,
             control_iters=control_iters,
         )
+
+    def draw_bins(self, batch_size, rng):
+        """A uniform bin per image, as TrivialAugment draws it, signed ops negated at
+        random. One bin per image for every op (common random numbers, like
+        ``sa``'s ``sampled_shared``): the ops are compared at the same draw, and
+        independent draws would attenuate R."""
+        shared = rng.integers(0, self.num_magnitude_bins, size=batch_size)
+        bins = {name: shared.copy() for name in self._names}
+        return bins, draw_flips(self._names, batch_size, rng)

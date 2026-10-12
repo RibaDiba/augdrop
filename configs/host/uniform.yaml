@@ -8,3 +8,9 @@ none_prob: null            # null: 1 / (A + 1)
 probe_interval: ${probe.schedule.interval}
 probe_iters: ${probe.schedule.iters}
 control_iters: ${probe.schedule.control_iters}
+# Which ops the probe fades in (probe/fade.py; see randaugment.yaml). Off: with DIFF32
+# there is nothing to fade; with a torchvision vocab, set ops to fade its ops at
+# probe.magnitude (this host has no magnitude policy of its own).
+fade:
+  ops: null
+  at: 1.0
