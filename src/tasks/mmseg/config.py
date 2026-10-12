@@ -13,7 +13,8 @@ dataset) is the base, and the builder fills in everything the yaml groups own:
                ``host=dict(type=<name>, **kwargs)`` and ``augment``
     probe/ selector/
                ``custom_hooks``: ``CollectGradientHook`` (NORMAL) and
-               ``ApplyWeightsHook`` (LOW), the priorities their classes carry
+               ``ApplyWeightsHook`` (LOW), the priorities their classes carry. The
+               host's ``fade:`` block goes to CollectGradientHook's ``fade`` / ``fade_at``
     sa/        host=sensaug only: ``RobustIterBasedTrainLoop`` / ``RobustValLoop`` /
                ``SubsetTestLoop``. Any other host keeps mmengine's stock loops
     task/      max_iters, val and checkpoint intervals, AMP, ``cfg_options`` (dotted
@@ -73,7 +74,7 @@ import copy
 import os
 from typing import Any, Optional
 
-from dropaug.config import CONFIG_DIR, host_kwargs, selector_spec, to_python
+from dropaug.config import CONFIG_DIR, fade_of, host_kwargs, selector_spec, to_python
 
 __all__ = ["build", "localize_pretrained_checkpoint"]
 
@@ -311,6 +312,7 @@ def build(cfg, work_dir: str, *, launcher: str = "none", resume: bool = False):
 
     probe = to_python(cfg.probe)
     collect = {k: probe[k] for k in _PROBE_KEYS if k in probe and probe[k] is not None}
+    collect["fade"], collect["fade_at"] = fade_of(cfg)
     analysis = probe.get("analysis") or {}
     apply_kwargs = {k: analysis[k] for k in ("mask_within_op", *_ANALYSIS_KEYS) if k in analysis}
     selector = selector_spec(cfg)

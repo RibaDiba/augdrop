@@ -5,8 +5,17 @@ defaults:
 
 name: randaugment
 num_ops: 2
-magnitude: 9
+magnitude: 9               # the bin every op is applied at; also the probe's intensity
 num_magnitude_bins: 31
 probe_interval: ${probe.schedule.interval}
 probe_iters: ${probe.schedule.iters}
 control_iters: ${probe.schedule.control_iters}
+# Which ops the probe fades in (probe/fade.py): x + a * (op(x, m) - x), differentiated in
+# a at `at`, with m this method's own magnitude (bin `magnitude` above, sign at random).
+# ops: non_differentiable (every op autograd can't differentiate: all 13 here), a list
+# of this vocab's op names, or null (Brightness / Color / Contrast / Sharpness through
+# their exact tangent, the rest by finite differences, NaN for AutoContrast / Equalize).
+# trivialaugment.yaml fades only the ops with no derivative.
+fade:
+  ops: non_differentiable
+  at: 1.0

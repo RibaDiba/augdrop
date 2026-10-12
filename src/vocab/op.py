@@ -32,6 +32,7 @@ import torch
 Tensor = torch.Tensor
 Magnitude = Union[None, float, Tensor]
 OpFn = Callable[[Tensor, Magnitude, Optional[Tensor]], Tuple[Tensor, Optional[Tensor]]]
+TangentFn = Callable[[Tensor, Magnitude], Tensor]
 
 KINDS = ("photometric", "geometric")
 
@@ -58,6 +59,12 @@ class OpSpec:
     grad_mode    one of GRAD_MODES
     warps_label  True exactly for geometric ops
     fn           the implementation, (images, magnitude, label) -> (images, label)
+    tangent      optional, (images, magnitude) -> (B, C, H, W): the exact derivative
+                 of the output w.r.t. the magnitude, per image, for an op autograd
+                 can't differentiate (e.g. torchvision's enhance ops, a blend before
+                 the 8-bit cast). The probe uses it instead of finite differences.
+                 Photometric ops only: along a tangent the label stays where the op
+                 put it, and a geometric op's row must move the label with the image.
     """
 
     name: str
@@ -69,6 +76,7 @@ class OpSpec:
     grad_mode: str
     warps_label: bool
     fn: OpFn = field(repr=False, compare=False)
+    tangent: Optional[TangentFn] = field(default=None, repr=False, compare=False)
 
     def __post_init__(self):
         if self.kind not in KINDS:
@@ -93,6 +101,10 @@ class OpSpec:
                     f"{self.name}: identity_at {self.identity_at} is outside "
                     f"mag_range {self.mag_range}"
                 )
+        if self.tangent is not None and (self.mag_range is None or self.warps_label):
+            raise ValueError(
+                f"{self.name}: only a photometric op with a magnitude can carry a tangent"
+            )
 
     @property
     def has_magnitude(self) -> bool:

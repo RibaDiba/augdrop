@@ -39,6 +39,7 @@ from typing import Any, Callable, Mapping, Optional, Sequence
 import numpy as np
 import torch
 
+from .fade import FADE, Fade, check_fade_at
 from .finite_diff import DEFAULT_STEP
 from .grad_collect import (
     UNPROBED,
@@ -46,8 +47,10 @@ from .grad_collect import (
     ModelAdapter,
     ProbeError,
     collect_grads,
+    far_end,
     op_method,
     preserved_rng,
+    resolve_methods,
 )
 from .probe_set import ProbeSet
 
@@ -75,12 +78,8 @@ def strength_to_magnitude(op, strength: float) -> float:
     """
     if not 0.0 <= strength <= 1.0:
         raise ValueError(f"strength must be in [0, 1], got {strength}")
-    lo, hi = op.mag_range
     anchor = op.identity_at
-    # A tie up to float error is a tie: 1.0 - 0.1 exceeds 1.9 - 1.0 by one ulp.
-    below_is_farther = (anchor - lo) - (hi - anchor) > 1e-9 * (hi - lo)
-    far = lo if below_is_farther else hi
-    return anchor + strength * (far - anchor)
+    return anchor + strength * (far_end(op) - anchor)
 
 
 @dataclass(frozen=True)
@@ -142,7 +141,11 @@ class Sweep:
 
     ``grads[op]`` and ``magnitudes[op]`` hold one (B,) chunk per batch, and
     ``image_ids[k]`` holds batch k's ids. ``matrix()`` stacks them into G. An op whose
-    ``methods`` entry is ``"unprobed"`` has no magnitude, and its rows are NaN.
+    ``methods`` entry is ``"unprobed"`` has no magnitude, and its rows are NaN. A
+    ``"fade"`` op's rows are d loss / d a at ``meta["fade_at"]``, and its magnitudes
+    are the fade's intensity (NaN for an op with no magnitude). Every other op's rows
+    (``"autograd"``, ``"tangent"``, ``"finite_diff"``) are d loss / d strength, signed
+    toward a stronger augmentation (``grad_collect.strength_sign``).
     """
 
     names: list[str]
@@ -174,6 +177,10 @@ class Sweep:
     @property
     def unprobed(self) -> list[str]:
         return [name for name in self.names if self.methods[name] == UNPROBED]
+
+    @property
+    def faded(self) -> list[str]:
+        return [name for name in self.names if self.methods[name] == FADE]
 
     def ids(self) -> list[str]:
         """G's column labels, in column order."""
@@ -210,8 +217,8 @@ class Sweep:
         summary = {}
         for name in self.names:
             chunks = self.magnitudes[name]
-            if chunks and name not in self.unprobed:
-                flat = np.concatenate(chunks)
+            # NaN throughout for an op with no magnitude, unprobed or faded.
+            if chunks and np.isfinite(flat := np.concatenate(chunks)).any():
                 summary[name] = {
                     "mean": float(flat.mean()),
                     "min": float(flat.min()),
@@ -250,6 +257,8 @@ def sweep(
     num_workers: int = 0,
     log_path: Optional[str] = None,
     meta: Optional[dict] = None,
+    fade: Fade = None,
+    fade_at: float = 1.0,
 ) -> Sweep:
     """One frozen-frame pass of ``adapter``'s model over ``probe_set``. Returns one G.
 
@@ -264,10 +273,18 @@ def sweep(
     ``batch_size`` is also the bootstrap's cluster size. Sensaug defaulted to 1
     (singleton clusters). Larger is faster, but activation memory scales with it,
     since the backward reaches the full-resolution input.
+
+    ``fade`` selects ops to fade in instead (fade.py): a rule (``"non_differentiable"``)
+    or a list of op names. Their rows are d loss / d a at ``a = fade_at``, which is
+    recorded in ``meta["fade_at"]``; ``methods`` says which ops were faded.
     """
     if not ops:
         raise ValueError("no ops to probe")
     names = list(ops)
+    methods = resolve_methods(ops, fade)
+    meta = dict(meta or {})
+    if FADE in methods.values():
+        meta["fade_at"] = fade_at = check_fade_at(fade_at)
     result = Sweep(
         names=names,
         checkpoint=checkpoint,
@@ -275,8 +292,8 @@ def sweep(
         magnitude_source=magnitudes.source,
         magnitude_mode=magnitudes.mode,
         probe_seed=probe_seed,
-        methods={name: op_method(op) for name, op in ops.items()},
-        meta=dict(meta or {}),
+        methods=methods,
+        meta=meta,
     )
     loader = probe_set.loader(
         dataset,
@@ -311,6 +328,8 @@ def sweep(
                     probe_seed=probe_seed,
                     fd_step=fd_step,
                     check=not checked,
+                    methods=methods,
+                    fade_at=fade_at,
                 )
             except ProbeError:
                 raise
@@ -342,14 +361,15 @@ def sweep(
             f"{[f['error'] for f in result.failed_batches][:3]}"
         )
     logger.info(
-        "checkpoint %s: probed %d images in %d batches (%d failed), %d ops (%d unprobed), "
-        "magnitudes %s/%s, probe set %s",
+        "checkpoint %s: probed %d images in %d batches (%d failed), %d ops (%d unprobed, "
+        "%d faded), magnitudes %s/%s, probe set %s",
         checkpoint,
         result.n_images,
         result.n_batches,
         len(result.failed_batches),
         len(names),
         len(result.unprobed),
+        len(result.faded),
         magnitudes.source,
         magnitudes.mode,
         probe_set.digest[:12],

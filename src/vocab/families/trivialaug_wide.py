@@ -30,7 +30,7 @@ from typing import Dict, Optional, Tuple
 
 from torchvision.transforms.v2 import TrivialAugmentWide
 
-from .randaug_default import build_ops
+from .randaug_default import build_bins, build_ops
 
 FAMILY = "trivialaug_wide"
 SOURCE = "torchvision.transforms.v2.TrivialAugmentWide (Müller & Hutter, 2021)"
@@ -53,3 +53,4 @@ RANGES: Dict[str, Optional[Tuple[Tuple[float, float], float]]] = {
 }
 
 OPS = build_ops(FAMILY, TrivialAugmentWide(), RANGES, None, SOURCE)
+BINS = build_bins(FAMILY, TrivialAugmentWide, RANGES, None)

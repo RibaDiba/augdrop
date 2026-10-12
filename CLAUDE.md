@@ -28,12 +28,27 @@ returns a report.
 | `legacy_hsv` | 14 | `diff_ops.py`, ported from Sensaug | Sensaug's: unsigned `[0,1]`, direction in the name |
 | `geometric` | 10 | same | same |
 | `pil_autoaug` | 8 | same (kornia forms, not torchvision's; see TODO(calibration) in `diff_ops.py`) | same |
-| `randaug_default` | 14 | torchvision v2 `RandAugment`'s own per-op dispatcher, on 8-bit images, `grad_mode="none"` | AutoAugment Table 6, which RandAugment inherits (degrees, factors, bits, px at 331×331) |
+| `randaug_default` | 14 | torchvision v2 `RandAugment`'s own per-op dispatcher, on 8-bit images, `grad_mode="none"`. The 4 enhance ops also carry an exact `tangent` (below) | AutoAugment Table 6, which RandAugment inherits (degrees, factors, bits, px at 331×331) |
 | `trivialaug_wide` | 14 | torchvision v2 `TrivialAugmentWide`'s dispatcher | TrivialAugment Table 8, wide ranges |
 | `autoaugment` | 1 | `Invert`, the one AutoAugment op RandAugment dropped, via torchvision v2 `AutoAugment`'s dispatcher. AutoAugment's other 13 ops are `randaug_default`'s (same Table 6 ranges) | no magnitude |
 
 Every op takes its magnitude at the images' dtype precision (the torchvision ops too),
 so a python float and a float32 tensor holding it give identical output.
+`magnitude_bins(name, num_bins)` → `(magnitudes, signed)`: the bins a torchvision method
+draws a `randaug_default` / `trivialaug_wide` op's magnitude from, in the op's units. It is
+read off torchvision's own `_AUGMENTATION_SPACE` (the families' `BINS`), not re-derived.
+torchvision's AutoAugment shares RandAugment's table, and float32 round-off at an end bin
+is clipped to `mag_range`. Checked by hand against `_AUGMENTATION_SPACE` element by element
+(RandAugment and TrivialAugment at 31 bins, AutoAugment at 10); no test yet.
+`OpSpec.tangent` (optional, photometric ops only) is `(images, magnitude) -> (B, C, H, W)`,
+the exact derivative of the op's output in its magnitude, for an op autograd can't
+differentiate. Only the torchvision enhance ops have one (`randaug_default.enhance_tangent`,
+shared by `trivialaug_wide`). torchvision computes each as `clamp(f·x + (1−f)·d)` cast to
+uint8, so the tangent is `x − d`, and 0 where the clamp holds. `d` is torchvision's own
+image at factor 0, except Contrast's, which is the float mean of `rgb_to_grayscale` (its
+factor-0 output truncates that mean). Checked by hand on all four ops at factors 0.01
+to 2.0: rebuilding the blend from `d` gives torchvision's output pixel for pixel. On a
+smooth float64 model, the probe's tangent row is within 0.6% of `d/df` of the float blend.
 `tests/probe/test_vocab_ops.py` runs every vocab op and every host's vocabulary
 through `collect_grads`, and pins the audit's "strongest magnitude" to the probe's
 `strength_to_magnitude(op, 1.0)`.
@@ -44,14 +59,18 @@ train.py picks a host with `build_host(name, **kwargs)`. A host is the method's
 sampling policy only: pure numpy, no torch, and it does not apply ops or run the
 probe. `AugHost` (`base.py`) provides `vocabulary()` (vocab op names, the axes of R
 and q), `base_probs()` / `sampling_probs()`, `set_weights(q)`, `should_probe(it)` and
-`probe_role(it)` (`"control"` R must not become a q).
+`probe_role(it)` (`"control"` R must not become a q). A method with a magnitude policy of
+its own also has `num_magnitude_bins` and `draw_bins(B, rng)`, which give per image the bin
+it would apply each op at and whether a signed op is negated (p = 0.5). That is the
+probe's intensity for it (`tasks/magnitudes.py`). It uses the method's distribution, never
+the q-tilted one. `sensaug` and `uniform` return None.
 
 | host | vocabulary | notes |
 |---|---|---|
 | `sensaug` | the 32 DIFF32 ops | the probe fires on Sensaug's round schedule (ported). The SA pdf arrives through `set_sa_pdf()` because the SA loop is not ported; `pdf()` returns it with q applied |
-| `randaugment` | `randaug_default.*` minus Identity | torchvision defaults: N=2, M=9 of 31 bins |
-| `trivialaugment` | `trivialaug_wide.*` minus Identity | |
-| `autoaugment` | `randaug_default.*` ops used by the ImageNet policy, plus `autoaugment.Invert` | q tilts the 25 sub-policies; `sampling_probs()` is what the policy actually draws, not q |
+| `randaugment` | `randaug_default.*` minus Identity | torchvision defaults: N=2, M=9 of 31 bins. `draw_bins`: bin M for every image |
+| `trivialaugment` | `trivialaug_wide.*` minus Identity | `draw_bins`: one uniform bin per image, shared across ops |
+| `autoaugment` | `randaug_default.*` ops used by the ImageNet policy, plus `autoaugment.Invert` | q tilts the 25 sub-policies; `sampling_probs()` is what the policy actually draws, not q. `draw_bins`: per op, a bin from the policy steps that apply it, weighted by step p |
 | `uniform` | any; defaults to DIFF32 | Sensaug's `--random-aug` bank |
 
 Rules every host keeps. The no-op draw (Identity, `("none", 0)`) stays out of the
@@ -61,6 +80,15 @@ compounding it, so derive it from `base_probs()`. A non-finite q raises.
 `tests/hosts/` pins the names against `vocab`, the torchvision op spaces and policy,
 and Sensaug's `round_schedule` and `redundancy.reweight`.
 
+Each `configs/host/<method>.yaml` also has a `fade:` block (`ops`, `at`), which sets the
+ops the probe fades in (see `src/probe/`). `host_kwargs` pops it, so it never reaches the
+host. `dropaug.config.fade_of(cfg)` reads it, and `check()` validates it against the vocab.
+randaugment and autoaugment have `ops: non_differentiable` (every op). trivialaugment
+fades only the four ops with no derivative in their magnitude (Solarize, Posterize,
+AutoContrast, Equalize). Its enhance ops go through their tangent, and its geometric
+ops through finite differences, which move the label with the image.
+sensaug and uniform have `ops: null`. A run saved before the block existed fades nothing.
+
 ## `src/probe/`: measuring G
 
 Ported from Sensaug's `CollectGradientHook` and `compute_grad_corr.py`, with no
@@ -69,8 +97,22 @@ turning G into R is `src/stats/`. The package docstring
 (`probe/__init__.py`) holds the two contracts the probe relies on:
 
 - **ops** are a vocab (`build_vocab`), in G's row order. `grad_mode="autograd"` ops are
-  differentiated directly, `"none"` ops by central finite differences
-  (`finite_diff.py`), and ops with no `mag_range` get a NaN row labelled `unprobed`.
+  differentiated directly. `"none"` ops go through their exact `tangent` when they have
+  one (method `"tangent"`: the loss at `op(x, m) + δ·tangent`, differentiated in δ at 0),
+  and by central finite differences otherwise (`finite_diff.py`). Ops with no
+  `mag_range` get a NaN row labelled `unprobed`. Every row that isn't faded is
+  `d loss / d strength`: the derivative in m times `strength_sign` (+1 above
+  `identity_at`, −1 below). Without that sign, an image on which a method negated a
+  signed op would enter R with the opposite sign. It is +1 on every DIFF32 op, so their
+  rows are unchanged.
+  A sweep's `fade` (a rule, `"non_differentiable"`, or a list of op names) overrides
+  the last three for the ops it selects. Each of those is faded in,
+  `x + a·(op(x, m) − x)`, with `op(x, m)` computed under no_grad at its probe magnitude
+  `m`. Its row is `d loss / d a` at `a = fade_at` (default 1, the augmented image), and
+  its method is `"fade"` (`fade.py`). An op with no magnitude gets a row this way too.
+  `Sweep.methods` says which ops were faded, and `meta["fade_at"]` holds `a`. A faded row
+  is a derivative along the fade, not `d loss / d m`. For a geometric op at 0 < a < 1 the
+  image is a ghost of two frames, and the warped label matches only one of them.
 - **a model adapter** (`ModelAdapter`, not a host) exposes `.model`,
   `to_unit(batch) -> (images01, label)` and `loss(images01, label, batch) -> (B,)`.
   `tasks.mmseg.MMSegBackend` is one (see `src/tasks/`).
@@ -78,9 +120,10 @@ turning G into R is `src/stats/`. The package docstring
 | file | what |
 |---|---|
 | `probe_set.py` | `ProbeSet.build(ids, n, seed)`: a subset chosen from the sorted ids, so it doesn't depend on listing order. Its sha256 `digest` goes on every G |
-| `grad_collect.py` | `collect_grads(adapter, batch, ops, magnitudes)` → `{op: (B,)}`. Refuses train-mode modules, checks the label moved for geometric ops, pins each op's RNG by `(probe_seed, name)`. `check=True` (first batch of a sweep) also rejects a non-deterministic `to_unit` and any image coupling |
+| `grad_collect.py` | `collect_grads(adapter, batch, ops, magnitudes)` → `{op: (B,)}`. Refuses train-mode modules, checks the label moved for geometric ops, pins each op's RNG by `(probe_seed, name)`. `check=True` (first batch of a sweep) also rejects a non-deterministic `to_unit` and any image coupling. `op_method` (autograd / tangent / finite_diff / unprobed), `far_end` (the direction an op strengthens in, which `strength_to_magnitude` uses too) and `strength_sign`. The sign was checked by hand: a finite-difference row of Rotate at ±40° equals the sign times the raw central difference |
 | `finite_diff.py` | the step is a fraction of each op's `mag_range` width (default 0.05). Quantized ops such as Posterize need a larger per-op `fd_step` |
 | `frozen_sweep.py` | `sweep(...)` → one `Sweep` (one G, `.matrix()` → `(G, batch_ids)`), optionally appending `aug_gradient_log.txt`. `sweep_checkpoints` gives one G per checkpoint at identical magnitudes. `Magnitudes.fixed / .relative(strength) / custom draw` |
+| `fade.py` | `FADE`, `FADE_RULES`, `faded_ops(ops, fade)`, `check_fade_at`, `fade_images`. The row itself is `grad_collect._fade_row` (`resolve_methods(ops, fade)` picks the method per op). Checked by hand: on a smooth float64 model, the rows equal central differences in `a` to ~1e-6 at a = 1 and 0.5 for every torchvision op kind. Before tangents and `strength_sign` (2026-10-12), `fade=None` with fixed magnitudes gave G bit-identical to the pre-fade code on all three torchvision hosts. Now the enhance ops' rows differ (tangent instead of finite differences), and so does any row whose magnitude is below `identity_at` (sign). No test yet |
 | `magnitude_sweep.py` | e3: one G per reference. A float is a strength in [0, 1] (`strength_to_magnitude`: identity → far end of `mag_range`); a mapping is absolute per-op magnitudes |
 
 Differences from Sensaug to keep in mind when comparing numbers. The loss is per
@@ -219,7 +262,16 @@ A `TaskBackend` (`base.py`) is a `probe.ModelAdapter` that can also `build_model
 `load_ckpt(path)` and name its clean probe data (`probe_data()` → `ProbeData(dataset,
 ids)`; the probe builds the loader itself, in ProbeSet order). With `predict` it is
 also `dropaug.eval`'s adapter. `build_backend(name)` imports a backend lazily, so
-`import tasks` needs no framework. Everything next to a backend is glue: it gates and
+`import tasks` needs no framework. `tasks/augment.py` (training draws) and `tasks/magnitudes.py` are shared by both
+backends. `tasks/magnitudes.py` gives the probe's magnitudes for a host,
+`probe_magnitudes(host, snapshot, mode, fallback)`:
+- `"fixed"` gives `probe.magnitude`;
+- a host with `draw_bins` (randaugment, trivialaugment, autoaugment) gives its own bins,
+  through `vocab.magnitude_bins`, mirrored about the identity when flipped (source
+  `"method"`, mode the host);
+- otherwise it is the SA snapshot (sensaug) or `probe.magnitude`.
+
+`scripts/probe.py` uses it too. Everything next to a backend is glue: it gates and
 calls `probe` / `stats` / `selection` / `hosts`, and computes nothing itself. No tests
 yet. The mmseg pieces were checked against stand-ins for mmseg, never against mmseg
 itself. The cls pieces were checked end to end on a torchvision resnet18 and a toy
@@ -231,7 +283,7 @@ ImageFolder, but never with timm (not in `sensAug`).
 | file | what |
 |---|---|
 | `backend.py` | `MMSegBackend(cfg, model=None, split="val")`, `.from_runner(runner)`. `to_unit` runs the model's preprocessor with `training=True` (mmseg pads the gt only there) with the train aug suspended, then de-normalizes. `loss` is `model.loss` per image, summed over its `loss*` keys, with the op's label swapped in and restored. `predict` is the segmentor's `inference` resized to the label. Refuses a random val pipeline, BGR input, and labels of mixed native sizes (use batch size 1). `load_ckpt` scopes the torch ≥2.6 `weights_only=False` patch to the one load |
-| `hooks.py` | `CollectGradientHook` (NORMAL): on `host.probe_role(runner.iter + 1)`, `probe.sweep` → `runner.probe_sweep`; saves/verifies `probe_set.json`. Its `magnitude_mode` (default `"mode"`, Sensaug's) takes each op's magnitude from the SA loop's last snapshot (`runner.corr_magnitudes`), falling back to `magnitude`. `ApplyWeightsHook` (LOW): `stats.analyze_sweep` → logs → `build_selector(type, lam=ramp_lambda(...))` → `host.set_weights(q)`. With `RobustValLoop` on an SA host, it only publishes R (`selection.publication`, rank 0's call broadcast), and the loop calls `reweight()` on every round's fresh pdf at Sensaug's λ, `ramp(target, (iter + 1) / max_iters)` (`GradCorrValLoop`). With no R held, or a declined selection, `reweight()` calls `host.clear_weights()`, so the round trains on its pdf as generated, as in Sensaug; the last q is never carried over. Without an SA loop, control probes, lam=0, a withheld R and a declined selection leave the host alone. Every rank sweeps; rank 0's q is broadcast. Checked (a scratchpad harness, no test yet) against Sensaug's real `_downweight_mrmr` / `reweight` / `compute_red` round by round (mRMR and soft at λ 0, 0.25, 1; withheld, skipped and FDR-empty emissions; both pdf generators): equal to 1e-12, same ops pruned |
+| `hooks.py` | `CollectGradientHook` (NORMAL): on `host.probe_role(runner.iter + 1)`, `probe.sweep` → `runner.probe_sweep`; saves/verifies `probe_set.json`. Its `magnitude_mode` (default `"mode"`, Sensaug's) takes each op's magnitude from the SA loop's last snapshot (`runner.corr_magnitudes`), falling back to `magnitude`. A host with `draw_bins` is probed at its own bins instead, except under `"fixed"` (`tasks.magnitudes`). `fade` / `fade_at` come from the host's `fade:` block (`config.py`) and go to `probe.sweep`. Compile-checked only: no mmengine in `sensAug`. `ApplyWeightsHook` (LOW): `stats.analyze_sweep` → logs → `build_selector(type, lam=ramp_lambda(...))` → `host.set_weights(q)`. With `RobustValLoop` on an SA host, it only publishes R (`selection.publication`, rank 0's call broadcast), and the loop calls `reweight()` on every round's fresh pdf at Sensaug's λ, `ramp(target, (iter + 1) / max_iters)` (`GradCorrValLoop`). With no R held, or a declined selection, `reweight()` calls `host.clear_weights()`, so the round trains on its pdf as generated, as in Sensaug; the last q is never carried over. Without an SA loop, control probes, lam=0, a withheld R and a declined selection leave the host alone. Every rank sweeps; rank 0's q is broadcast. Checked (a scratchpad harness, no test yet) against Sensaug's real `_downweight_mrmr` / `reweight` / `compute_red` round by round (mRMR and soft at λ 0, 0.25, 1; withheld, skipped and FDR-empty emissions; both pdf generators): equal to 1e-12, same ops pruned |
 | `transforms.py` | `GpuAugSegDataPreProcessor(host=dict(type=...), augment=True)`: Sensaug's `GpuAugSegDataPreProcessor`, batched on GPU after collation, same arithmetic as the backend. It owns the host (`.host`) the hooks read. Sampling is Sensaug's: the SensAug pdf with q (+N(0, 0.1) level jitter), else `sampling_probs()` / `none_prob` at a uniform level. DIFF32 ops with the `sensaug` / `uniform` hosts only; other hosts raise unless `augment=False`. The eval slot (`set_eval(op, level)` / `set_eval_none()`, Sensaug's `set_eval_spec`) applies one op to every image on the eval path, for the SA loop |
 | `loops.py` | Sensaug's loops. `RobustValLoop` (val_cfg) is the SA loop: after `warmup_rounds`, every round scores each op at each curve level on `ratio` of val through the eval slot, builds the pdf (`sa.generate_pdf_new` with `descending_MA`, or `uniform` / `weighted_augs`) and calls `host.set_sa_pdf`, then `ApplyWeightsHook.reweight`, then publishes `runner.corr_magnitudes`. It re-searches the curve (`sa.sa_curve`, via `SubsetTestLoop`) every `SA_CURVE_CADENCE` = 6 rounds. Writes `sa_curve_log.txt`, `perturb_eval.txt`, `corr_magnitudes.json`. Refuses `warmup_rounds` / val_interval that differ from the host's. Also `RobustBaselineValLoop`, `SubsetTestLoop` (test_cfg, with KID), `SubsetValLoop`, `RobustIterBasedTrainLoop` (train_cfg, `init_sa`). The module docstring has the config Sensaug's train.py set |
 | `register.py` | imports `hooks`, `loops` and `transforms` so the registries see them |
@@ -266,7 +318,7 @@ datasets whose val resize isn't the identity (not Cityscapes).
 | file | what |
 |---|---|
 | `backend.py` | `ClsBackend(model, data=, mean=, std=, label_smoothing=0)`. `model` is an nn.Module or `dict(library="timm" \| "torchvision", name=, **kwargs)`. The batch is `dropaug.eval`'s item collated (`image` in [0, 1], `target`, `id`); `to_unit` returns label None and refuses images outside [0, 1]; `loss` is per-image CE; mean/std default to timm's `pretrained_cfg`, else ImageNet's. `load_ckpt` takes `state_dict` / `model` / `state_dict_ema` or a bare state dict, strips `module.`, and loads strictly. `ImageFolderItems` (resize the short side + center crop) and `CifarItems` (never downloads) give ids that match `ImageNetC` / `CifarC` |
-| `callbacks.py` | `CollectGradientCallback(backend, host, ...)` / `ApplyWeightsCallback(host, selector=..., **analyze kwargs)`: the mmseg hooks for a hand-written loop, `before_run(work_dir, max_iters, resume=)` then `apply.after_train_iter(it, collect.after_train_iter(it))`. Same files, same DDP handling (rank 0 writes and broadcasts q). The q policy is `selection.decide`. Applying the host's draws to training images is the loop's job; there is no cls train-time augmentation |
+| `callbacks.py` | `CollectGradientCallback(backend, host, ..., magnitude_mode=, fade=, fade_at=)` / `ApplyWeightsCallback(host, selector=..., **analyze kwargs)`: the mmseg hooks for a hand-written loop, `before_run(work_dir, max_iters, resume=)` then `apply.after_train_iter(it, collect.after_train_iter(it))`. Same files, same DDP handling (rank 0 writes and broadcasts q). The q policy is `selection.decide`. Applying the host's draws to training images is the loop's job; there is no cls train-time augmentation |
 
 ## `slurm/`: jobs on UMD Nexus (gamma)
 

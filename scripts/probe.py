@@ -28,8 +28,14 @@ logs already are):
 Magnitudes. With ``probe.magnitude_mode`` other than ``fixed`` and a
 ``<work-dir>/corr_magnitudes.json`` (written by the SA loop of a sensaug-host run), each
 op is probed at the SA levels published at or before the checkpoint's iteration, as the
-live hook does (``sa.probe_magnitudes``); ops the snapshot lacks, and every other run,
-use ``probe.magnitude``. The source and mode are recorded in every output.
+live hook does (``sa.probe_magnitudes``); ops the snapshot lacks use
+``probe.magnitude``. A randaugment / trivialaugment / autoaugment run is probed at its
+host's own magnitude bins (``tasks.magnitudes``), and every other run at
+``probe.magnitude``. The source and mode are recorded in every output.
+
+Fading. The ops the run's host config names in its ``fade:`` block (``host.fade.ops``,
+e.g. ``non_differentiable``) are faded in at that magnitude and differentiated along
+the fade at ``host.fade.at`` (``probe.fade``); ``host.fade.ops=null`` turns it off.
 
 Exit status 2 on a bad invocation: a missing work dir, ``dropaug.yaml`` or checkpoint,
 an output dir that already holds a gradient log, a backend that is not wired.
@@ -162,7 +168,7 @@ def run(args) -> int:
     out_dir = os.path.abspath(args.output_dir)
     checkpoint = os.path.abspath(args.checkpoint)
 
-    from dropaug.config import RUN_FILE, ConfigError, load, magnitudes_of, to_python, vocab_of
+    from dropaug.config import RUN_FILE, ConfigError, fade_of, load, magnitudes_of, to_python, vocab_of
 
     if not os.path.isdir(work_dir):
         die(f"--work-dir {work_dir} does not exist")
@@ -189,6 +195,7 @@ def run(args) -> int:
     from dropaug import io as dio
     from dropaug.config import host_of
     from selection import Redundancy, measured_red
+    from tasks.magnitudes import probe_magnitudes
     from vocab import get_op
 
     pcfg = to_python(cfg.probe)
@@ -197,10 +204,17 @@ def run(args) -> int:
         die(f"probe.magnitude_mode {mode!r} is not one of {sa.MAGNITUDE_MODES}")
     try:
         fallback = magnitudes_of(cfg.probe.magnitude)
-        ops = {name: get_op(name) for name in host_of(cfg).vocabulary()}
+        host = host_of(cfg)
+        ops = {name: get_op(name) for name in host.vocabulary()}
         fallback.draw(ops, 1, np.random.default_rng(0))  # a bad magnitude fails now
     except (KeyError, ValueError) as error:
         die(f"probe.magnitude={pcfg.get('magnitude')!r}: {error}")
+    fade, fade_at = fade_of(cfg)
+    try:
+        faded = probe.faded_ops(ops, fade)
+        fade_at = probe.check_fade_at(fade_at)
+    except ValueError as error:
+        die(f"host.fade={to_python(cfg.host.get('fade'))!r}: {error}")
 
     os.makedirs(out_dir, exist_ok=True)
     backend, meta = make_backend(cfg, work_dir, pcfg.get("split", "val"), checkpoint)
@@ -210,9 +224,10 @@ def run(args) -> int:
     probe_set.save(os.path.join(out_dir, PROBE_SET_FILE))
 
     snapshot, snapshot_iter = ({}, None) if mode == sa.MODE_FIXED else sa_snapshot(work_dir, ckpt_iter)
-    magnitudes = sa.probe_magnitudes(snapshot, mode, fallback)
+    magnitudes = probe_magnitudes(host, snapshot, mode, fallback)
     print(
-        f"[probe] {len(ops)} ops, probe set {probe_set.digest[:12]} ({len(probe_set)} images of "
+        f"[probe] {len(ops)} ops ({len(faded)} faded at a={fade_at:g}), probe set "
+        f"{probe_set.digest[:12]} ({len(probe_set)} images of "
         f"{data.source}; {probe_set_how}), checkpoint iter {ckpt_iter}, magnitudes "
         f"{magnitudes.source}/{magnitudes.mode}"
         + (f" (SA snapshot of iter {snapshot_iter})" if snapshot else "")
@@ -238,6 +253,8 @@ def run(args) -> int:
             "posthoc": True,
             "magnitudes_snapshot_iter": snapshot_iter,
         },
+        fade=fade,
+        fade_at=fade_at,
     )
 
     analysis_cfg = dict(pcfg.get("analysis") or {})

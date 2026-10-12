@@ -5,9 +5,12 @@
 # mag_range; on the DIFF32 ops it is the magnitude itself, and 0.5 is Sensaug's fixed
 # fallback). A mapping {op: magnitude} gives each op its own, in its own units.
 magnitude: 0.5
-# Which magnitude each op is probed at, once the SA loop has produced a pdf (host=sensaug;
-# every other host always uses `magnitude` above). Before the first SA round, and for
-# `fixed`, it falls back to `magnitude`. See sa/magnitudes.py.
+# Which magnitude each op is probed at, once the SA loop has produced a pdf (host=sensaug).
+# Before the first SA round, and for `fixed`, it falls back to `magnitude`. See
+# sa/magnitudes.py. The randaugment / trivialaugment / autoaugment hosts are probed at
+# their own magnitude bins in every mode but `fixed` (tasks/magnitudes.py), and uniform
+# always uses `magnitude`. Which ops are faded in instead of differentiated is each
+# host's `fade:` block (configs/host/).
 #   mode                 each op at its modal SA level, the same for every image (Sensaug's)
 #   sampled_shared       per image, drawn from each op's level distribution + N(0, 0.1)
 #                        jitter, the draw shared across ops
