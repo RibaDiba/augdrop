@@ -326,13 +326,19 @@ Ported from Sensaug's `job_scripts/` (Della is no longer used). The checkout is 
 to be at `/gammascratch/amodak/dropaug` (`REPO_DIR`). The `#SBATCH --output` lines
 hard-code `slurm/logs/` under it, and that directory must exist before you submit.
 Every script reads its knobs from env vars, which are documented in each script's header.
-The entry points they call (`train.py`, `scripts/probe.py`, `scripts/eval.py`) **don't
-exist yet**; each header lists the flags that entry point must accept.
+The entry points they call are `train.py`, `scripts/probe.py` and `scripts/eval.py`; each
+one's docstring documents its flags. `scripts/probe.py` probes a dropaug run
+(`--work-dir`, rebuilt from its `dropaug.yaml`, with its own host's ops) or any mmseg
+checkpoint (`--backbone`/`--task`, `--dataset`, `--method`): the model is the task +
+recipe for that pair, loaded strictly, and the ops, magnitudes and fade are the
+`--method` host config's, whatever the model was trained with. `--dry-run` prints them
+without building a model. Only the sensaug method reads an SA snapshot
+(`corr_magnitudes.json`, by default next to the checkpoint).
 
 | file | what |
 |---|---|
 | `train.sbatch` | `[host] [dataset] [selector] [seed]`, 4×A6000, torchrun. From `train_nexus_gamma.sbatch`. Selector `none` is the λ=0 control. The run dir is `experiments/<host>_<selector>-l<λ>_<dataset>_<backbone>_s<seed>`, and the script refuses to resume an existing run unless `ALLOW_RESUME=1`. With host `sensaug` it passes `--descending-MA --no-inv-aug`, as Sensaug's sbatch did on every run (`DESCENDING_MA=0` / `INV_AUG=1` turn them off). Afterwards it queues `eval.sbatch` as a separate 1-GPU job |
-| `probe.sbatch` | `<exp_dir>`: a post-hoc probe of one checkpoint (`CKPT=best\|last\|path`) into `<exp_dir>/probe/<ckpt>[_<PROBE_TAG>]`. It refuses a directory that already holds a gradient log, because two Gs in one file would pool |
+| `probe.sbatch` | `<exp_dir>`: a post-hoc probe of one checkpoint of a dropaug run (`CKPT=best\|last\|path`) into `<exp_dir>/probe/<ckpt>[_<PROBE_TAG>]`. Or `<checkpoint.pth> <backbone> <dataset> <method>`: any checkpoint, probed with that method's ops, into `<ckpt dir>/probe/<ckpt>_<method>[_<PROBE_TAG>]` (`CLUSTER`, `DATA_ROOT`, `MAGNITUDES_PATH`). It refuses a directory that already holds a gradient log, because two Gs in one file would pool |
 | `eval.sbatch` | `<exp_dir>`: `dropaug.eval` on one checkpoint → `<exp_dir>/eval/<ckpt>.jsonl`. Resumes on resubmit |
 | `matrix.sbatch` | array over `HOSTS` × `DATASETS` × `SELECTORS` × `SEEDS`, one `train.sbatch` per task. `bash slurm/matrix.sbatch` lists the grid; `--submit` submits it |
 | `common.sh` | sourced by all four: log grouping into `slurm/logs/<job-name>/`, conda/module setup, checkpoint resolution |

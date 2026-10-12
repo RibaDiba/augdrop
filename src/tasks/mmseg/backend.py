@@ -103,15 +103,17 @@ class MMSegBackend(TaskBackend):
         self.model = model.to(device).eval()
         return self.model
 
-    def load_ckpt(self, path) -> dict:
+    def load_ckpt(self, path, strict: bool = False) -> dict:
         """Load an mmengine checkpoint's weights onto the model; returns its meta
-        (``iter``, the dumped ``cfg``, ...)."""
+        (``iter``, the dumped ``cfg``, ...). ``strict`` raises ``RuntimeError`` on a
+        missing or unexpected key (mmengine's own message lists them); otherwise they
+        are only logged, as mmengine does."""
         from mmengine.runner import load_checkpoint
 
         if self.model is None:
             raise RuntimeError("no model to load into: call build_model() first")
         with _trusted_torch_load():
-            checkpoint = load_checkpoint(self.model, str(path), map_location="cpu")
+            checkpoint = load_checkpoint(self.model, str(path), map_location="cpu", strict=strict)
         self.model.eval()
         return dict(checkpoint.get("meta", {})) if isinstance(checkpoint, dict) else {}
 
