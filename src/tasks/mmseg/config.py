@@ -299,7 +299,11 @@ def build(cfg, work_dir: str, *, launcher: str = "none", resume: bool = False):
             **{k: sa[k] for k in _SA_VAL_KEYS if k in sa},
             warmup_rounds=int(host.warmup_rounds),
         )
-        out.test_cfg = dict(type="SubsetTestLoop", ratio=sa.get("test_ratio", sa.get("ratio", 0.25)))
+        out.test_cfg = dict(
+            type="SubsetTestLoop",
+            ratio=sa.get("test_ratio", sa.get("ratio", 0.25)),
+            kid_rgb=bool(sa.get("kid_rgb", True)),
+        )
     else:
         out.train_cfg.update(type="IterBasedTrainLoop", val_interval=int(task["val_interval"]))
         out.val_cfg = dict(type="ValLoop")

@@ -9,6 +9,9 @@
 # both: 0.25, or 1.0 on ACDC (the dataset's sa_ratio)
 ratio: ${oc.select:dataset.sa_ratio,0.25}
 test_ratio: ${oc.select:dataset.sa_ratio,0.25}
+# KID's Inception expects RGB; the loaded images are mmcv's BGR. true flips both sides
+# to RGB before KID (SubsetTestLoop.kid_rgb). false is Sensaug's: BGR into Inception.
+kid_rgb: true
 descending_MA: false     # --descending-MA: the lowest-mIoU level of an op gets the most mass
 uniform: false           # --uniform: a uniform pdf instead of the SA one
 weighted_augs: false     # --weighted-augs: sa.generate_pdf_new_weighted_aug
