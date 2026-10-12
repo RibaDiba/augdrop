@@ -47,7 +47,7 @@ set -o pipefail
 #   host      a configs/host name (default sensaug); train.py's config check rejects
 #             a host the task's augmentation path can't apply
 #   dataset   a configs/dataset name (default cityscapes)
-#   selector  a selection.SELECTORS name (default mrmr), or `none`: the lambda=0
+#   selector  a selection.SELECTORS name, or `none` (the default): the lambda=0
 #             control, which probes and logs R but never changes the host's q
 #   seed      integer (default 0); the run's training seed, and random_k's draw
 #
@@ -94,7 +94,7 @@ set -o pipefail
 # rejected below instead of silently becoming the default.
 HOST="${1-sensaug}"
 DATASET="${2-cityscapes}"
-SELECTOR="${3-sensaug}"
+SELECTOR="${3-none}"
 SEED="${4-0}"
 BACKBONE="${BACKBONE:-segformer}"
 LAM="${LAM:-0.25}"
@@ -171,6 +171,9 @@ TRAIN_FLAGS=(
     --lam "${LAM}"
     --seed "${SEED}"
     --work-dir "${EXP_DIR}"
+    # In the preflight too: launcher is part of dropaug.yaml, so a preflight without
+    # it saved launcher none and the torchrun launch then refused the mismatch.
+    --launcher pytorch
 )
 if [ "${HOST}" = "sensaug" ]; then
     [ "${DESCENDING_MA:-1}" != "0" ] && TRAIN_FLAGS+=(--descending-MA)
@@ -212,7 +215,6 @@ echo "=== train: host=${HOST} dataset=${DATASET} selector=${SELECTOR} lam=${LAM}
 torchrun "${TORCHRUN_ARGS[@]}" \
     "${TRAIN_PY}" \
     "${TRAIN_FLAGS[@]}" \
-    --launcher pytorch \
     "${extra[@]}"
 
 TRAIN_STATUS=$?
