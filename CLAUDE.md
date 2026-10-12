@@ -271,7 +271,7 @@ datasets whose val resize isn't the identity (not Cityscapes).
 ## `slurm/`: jobs on UMD Nexus (gamma)
 
 Ported from Sensaug's `job_scripts/` (Della is no longer used). The checkout is assumed
-to be at `/gammascratch/amodak/dropaug` (`REPO_DIR`). The `#SBATCH --output` lines
+to be at `/fs/gamma-projects/pruneaug` (`REPO_DIR`). The `#SBATCH --output` lines
 hard-code `slurm/logs/` under it, and that directory must exist before you submit.
 Every script reads its knobs from env vars, which are documented in each script's header.
 The entry points they call (`train.py`, `scripts/probe.py`, `scripts/eval.py`) **don't

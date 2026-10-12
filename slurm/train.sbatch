@@ -30,8 +30,8 @@
 # Absolute and flat: SLURM opens these before the body runs, so neither a path
 # relative to the submit dir nor a per-job subdirectory works. The body moves them
 # into slurm/logs/<job-name>/ (see common.sh). slurm/logs/ must exist.
-#SBATCH --output=/gammascratch/amodak/dropaug/slurm/logs/%x.%j.out
-#SBATCH --error=/gammascratch/amodak/dropaug/slurm/logs/%x.%j.err
+#SBATCH --output=/fs/gamma-projects/pruneaug/slurm/logs/%x.%j.out
+#SBATCH --error=/fs/gamma-projects/pruneaug/slurm/logs/%x.%j.err
 
 #SBATCH --mail-user=amodak@terpmail.umd.edu
 #SBATCH --mail-type=FAIL,END
@@ -131,7 +131,7 @@ EXP_NAME="${EXP_NAME:-${HOST}_${_arm}_${DATASET}_${BACKBONE}_s${SEED}${RUN_TAG:+
 WORK_DIR="${WORK_DIR:-./experiments}"
 CLUSTER="${CLUSTER:-nexus}"
 TRAIN_PY="${TRAIN_PY:-train.py}"
-REPO_DIR="${REPO_DIR:-/gammascratch/amodak/dropaug}"
+REPO_DIR="${REPO_DIR:-/fs/gamma-projects/pruneaug}"
 
 cd "${REPO_DIR}" || { echo "ERROR: REPO_DIR=${REPO_DIR} does not exist" >&2; exit 1; }
 # shellcheck disable=SC1091

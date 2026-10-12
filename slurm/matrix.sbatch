@@ -16,8 +16,8 @@
 
 # %A_%a: array job id and task index. The body groups them into
 # slurm/logs/<job-name>/, so one submission's tasks share one directory.
-#SBATCH --output=/gammascratch/amodak/dropaug/slurm/logs/%x.%A_%a.out
-#SBATCH --error=/gammascratch/amodak/dropaug/slurm/logs/%x.%A_%a.err
+#SBATCH --output=/fs/gamma-projects/pruneaug/slurm/logs/%x.%A_%a.out
+#SBATCH --error=/fs/gamma-projects/pruneaug/slurm/logs/%x.%A_%a.err
 
 #SBATCH --mail-user=amodak@terpmail.umd.edu
 #SBATCH --mail-type=FAIL,END
@@ -63,7 +63,7 @@ DATASETS="${DATASETS:-cityscapes ade20k pascal_voc12 loveda}"
 SELECTORS="${SELECTORS:-none mrmr random_k kl_reweight qpfs dpp relevance_only}"
 SEEDS="${SEEDS:-0 1 2}"
 BACKBONES="${BACKBONES:-segformer}"
-REPO_DIR="${REPO_DIR:-/gammascratch/amodak/dropaug}"
+REPO_DIR="${REPO_DIR:-/fs/gamma-projects/pruneaug}"
 
 read -r -a H <<< "${HOSTS}"
 read -r -a D <<< "${DATASETS}"
