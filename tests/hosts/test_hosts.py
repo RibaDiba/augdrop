@@ -15,7 +15,7 @@ from hosts.sensaug import (
     derive_corr_rounds,
     round_fire_iters,
 )
-from hosts.trivialaugment import TrivialAugmentHost
+from hosts.trivialaugment import TrivialAugmentDiffHost, TrivialAugmentHost
 from hosts.uniform import UniformHost
 
 SENSAUG_ROOT = Path(__file__).resolve().parents[2] / "third_party" / "Sensaug"
@@ -25,6 +25,7 @@ FACTORIES = {
     "sensaug": lambda: SensAugHost(max_iters=20000),
     "randaugment": lambda: RandAugmentHost(probe_interval=1000),
     "trivialaugment": lambda: TrivialAugmentHost(probe_interval=1000),
+    "trivialaugment_diff": lambda: TrivialAugmentDiffHost(probe_interval=1000),
     "autoaugment": lambda: AutoAugmentHost(probe_interval=1000),
     "uniform": lambda: UniformHost(probe_interval=1000),
 }
@@ -192,6 +193,7 @@ def test_vocabulary_is_a_vocab(name):
         (lambda: UniformHost(), None),
         (RandAugmentHost, {"families": ["randaug_default"], "exclude": ["randaug_default.Identity"]}),
         (TrivialAugmentHost, {"families": ["trivialaug_wide"], "exclude": ["trivialaug_wide.Identity"]}),
+        (TrivialAugmentDiffHost, {"families": ["trivialaug_diff"]}),
     ],
 )
 def test_vocabulary_order_is_vocab_order(host, config):
@@ -445,3 +447,26 @@ def test_sensaug_rejects_bad_pdf(mutate, exc, match):
     mutate(pdf)
     with pytest.raises(exc, match=match):
         host.set_sa_pdf(pdf)
+
+
+def test_trivialaugment_diff_splits_trivialaugments_distribution():
+    """Each signed op's share is split between its two directions: uniform q is
+    TrivialAugmentWide's own distribution, direction by direction."""
+    host, wide = TrivialAugmentDiffHost(), TrivialAugmentHost()
+    assert host.none_prob == wide.none_prob == pytest.approx(1 / 14)
+    probs = dict(zip(host.vocabulary(), host.base_probs()))
+    for name, p in zip(wide.vocabulary(), wide.base_probs()):
+        base = name.split(".", 1)[1]
+        pos, neg = f"trivialaug_diff.{base}_pos", f"trivialaug_diff.{base}_neg"
+        if pos in probs:
+            assert probs[pos] == probs[neg] == pytest.approx(p / 2)
+        else:
+            assert probs[f"trivialaug_diff.{base}"] == pytest.approx(p)
+
+
+def test_trivialaugment_diff_draws_one_shared_bin():
+    host = TrivialAugmentDiffHost()
+    bins, _ = host.draw_bins(64, np.random.default_rng(0))
+    columns = np.stack([bins[name] for name in host.vocabulary()])
+    assert (columns == columns[0]).all()
+    assert columns.min() >= 0 and columns.max() < host.num_magnitude_bins

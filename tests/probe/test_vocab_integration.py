@@ -29,7 +29,7 @@ def test_default_vocab_is_probed_by_autograd_in_sensaug_order():
     assert set(result.methods.values()) == {"autograd"}
 
 
-def test_torchvision_family_falls_back_to_finite_differences():
+def test_torchvision_family_falls_back_to_tangents_and_finite_differences():
     ops = build_vocab({"families": ["randaug_default"]})
     result = _sweep(ops, fd_step=0.1)
     G, _ = result.matrix()
@@ -38,4 +38,5 @@ def test_torchvision_family_falls_back_to_finite_differences():
         if ops[name].mag_range is None:
             assert result.methods[name] == "unprobed" and np.isnan(row).all(), name
         else:
-            assert result.methods[name] == "finite_diff" and np.isfinite(row).all(), name
+            expected = "tangent" if ops[name].tangent is not None else "finite_diff"
+            assert result.methods[name] == expected and np.isfinite(row).all(), name

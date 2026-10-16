@@ -7,6 +7,7 @@ FDR) is analysis, not measurement, and is not in this package.
     probe_set.py        ProbeSet: the fixed, hashed image subset every G is measured on
     grad_collect.py     collect_grads(adapter, batch, ops, magnitudes) -> rows of G
     finite_diff.py      fd_grad: the fallback for ops autograd can't differentiate
+    fade.py             the other one: d loss / d a of x + a * (op(x, m) - x)
     frozen_sweep.py     sweep / sweep_checkpoints: checkpoints x probe set -> G
     magnitude_sweep.py  sweep_magnitudes: G at several reference magnitudes (e3)
 
@@ -15,9 +16,15 @@ talks to two duck-typed things.
 
 THE OPS are a vocab: an ordered ``{name: OpSpec}`` from ``vocab.build_vocab``, whose
 order is G's row order. The probe uses ``op.apply(images01, magnitude, label)`` with a
-(B,) magnitude tensor, plus ``mag_range``, ``identity_at``, ``grad_mode`` and
-``warps_label``. ``grad_mode="autograd"`` ops are differentiated directly; ``"none"``
-ops go through finite differences; ops with no magnitude get a NaN row.
+(B,) magnitude tensor, plus ``mag_range``, ``identity_at``, ``grad_mode``,
+``warps_label`` and the optional ``tangent``. ``grad_mode="autograd"`` ops are
+differentiated directly; ``"none"`` ops through their exact ``tangent`` when they have
+one, by finite differences otherwise; ops with no magnitude get a NaN row. A sweep's
+``fade`` overrides the last three for the ops it selects: they are faded in at their
+magnitude and differentiated along the fade (fade.py), which needs no magnitude. Every
+row that isn't faded is d loss / d strength, signed toward a stronger augmentation
+(``grad_collect.strength_sign``), so an image a method negated a signed op on enters R
+with the same sign as the others.
 
 A MODEL ADAPTER wraps the model being probed (not an ``AugHost``: a host is a
 method's sampling policy, and the probe doesn't need one):
@@ -42,22 +49,29 @@ method's sampling policy, and the probe doesn't need one):
         The probe loader's ``collate_fn``.
 """
 
+from .fade import FADE, FADE_RULES, NON_DIFFERENTIABLE, check_fade_at, faded_ops
 from .finite_diff import DEFAULT_STEP, fd_grad
 from .frozen_sweep import Magnitudes, Sweep, strength_to_magnitude, sweep, sweep_checkpoints
-from .grad_collect import ModelAdapter, ProbeError, collect_grads, preserved_rng
+from .grad_collect import ModelAdapter, ProbeError, collect_grads, preserved_rng, resolve_methods
 from .magnitude_sweep import sweep_magnitudes
 from .probe_set import ProbeSet
 
 __all__ = [
     "DEFAULT_STEP",
+    "FADE",
+    "FADE_RULES",
+    "NON_DIFFERENTIABLE",
     "Magnitudes",
     "ModelAdapter",
     "ProbeError",
     "ProbeSet",
     "Sweep",
+    "check_fade_at",
     "collect_grads",
+    "faded_ops",
     "fd_grad",
     "preserved_rng",
+    "resolve_methods",
     "strength_to_magnitude",
     "sweep",
     "sweep_checkpoints",

@@ -14,7 +14,7 @@ from typing import Iterable, Optional
 
 import numpy as np
 
-from .base import AugHost
+from .base import AugHost, draw_flips
 
 __all__ = ["RandAugmentHost", "OP_ORDER", "IDENTITY", "family_ops"]
 
@@ -82,3 +82,9 @@ class RandAugmentHost(AugHost):
             probe_iters=probe_iters,
             control_iters=control_iters,
         )
+
+    def draw_bins(self, batch_size, rng):
+        """Every op at bin ``magnitude``, as RandAugment applies it, signed ops
+        negated at random."""
+        bins = {name: np.full(batch_size, self.magnitude) for name in self._names}
+        return bins, draw_flips(self._names, batch_size, rng)

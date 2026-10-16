@@ -34,7 +34,7 @@ from typing import Iterable, Optional, Sequence, Tuple
 
 import numpy as np
 
-from .base import AugHost
+from .base import AugHost, draw_flips
 from .randaugment import IDENTITY, OP_ORDER
 
 __all__ = ["AutoAugmentHost", "IMAGENET_POLICY", "AUTOAUGMENT_OPS", "vocab_name"]
@@ -123,6 +123,24 @@ class AutoAugmentHost(AugHost):
         self._applications = full[:, applied]
         self._subpolicy_probs = np.full(len(self.policy), 1.0 / len(self.policy))
 
+        # Per op, the bins the policy applies it at, each weighted by its step's
+        # probability. Sub-policies are equally likely, so their 1/25 cancels.
+        weights: dict = {}
+        for s, sub in enumerate(self.policy):
+            for op, prob, bin_ in sub:
+                if bin_ is None or prob == 0:
+                    continue
+                if not 0 <= bin_ < self.num_magnitude_bins:
+                    raise ValueError(
+                        f"sub-policy {s}: {op} at bin {bin_}, outside [0, {self.num_magnitude_bins})"
+                    )
+                per_op = weights.setdefault(vocab_name(op), {})
+                per_op[int(bin_)] = per_op.get(int(bin_), 0.0) + prob
+        self._op_bins = {
+            name: (np.array(sorted(b)), np.array([b[k] for k in sorted(b)]) / sum(b.values()))
+            for name, b in weights.items()
+        }
+
         super().__init__(
             tuple(vocab_name(op) for op, keep in zip(AUTOAUGMENT_OPS, applied) if keep),
             self._subpolicy_probs @ self._applications,
@@ -131,6 +149,18 @@ class AutoAugmentHost(AugHost):
             probe_iters=probe_iters,
             control_iters=control_iters,
         )
+
+    def draw_bins(self, batch_size, rng):
+        """Per op and image, a bin drawn from the bins the policy applies that op at,
+        weighted by each step's probability over equally likely sub-policies: the
+        published policy, not the q-tilted one. Ops the policy applies without a bin
+        (AutoContrast, Equalize, Invert) have no magnitude and are left out. Signed
+        ops negated at random."""
+        bins = {
+            name: values[rng.choice(len(values), size=batch_size, p=probs)]
+            for name, (values, probs) in self._op_bins.items()
+        }
+        return bins, draw_flips(list(bins), batch_size, rng)
 
     def subpolicy_probs(self) -> np.ndarray:
         """The probability of drawing each row of ``policy``. The sampler reads this."""

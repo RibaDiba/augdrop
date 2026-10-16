@@ -13,7 +13,7 @@ import pytest
 vocab = pytest.importorskip("vocab")
 
 from probe import collect_grads, strength_to_magnitude  # noqa: E402
-from probe.grad_collect import AUTOGRAD, FINITE_DIFF, UNPROBED, op_method  # noqa: E402
+from probe.grad_collect import AUTOGRAD, FINITE_DIFF, TANGENT, UNPROBED, op_method  # noqa: E402
 from probe_helpers import ToyAdapter, make_batch  # noqa: E402
 from vocab.audit import _strongest  # noqa: E402
 
@@ -23,9 +23,14 @@ EXPECTED_METHOD = {
     "pil_autoaug": AUTOGRAD,
     "randaug_default": FINITE_DIFF,
     "trivialaug_wide": FINITE_DIFF,
+    "trivialaug_diff": AUTOGRAD,
     "autoaugment": UNPROBED,
 }
 MAGNITUDE_FREE = {"Identity", "AutoContrast", "Equalize", "Invert"}
+# torchvision's enhance ops carry an exact tangent.
+ENHANCE = {"Brightness", "Color", "Contrast", "Sharpness"}
+# trivialaug_diff keeps these as torchvision's own ops: no tangent, finite differences.
+EXACT_STEPPED = {"Posterize", "Solarize"}
 
 
 def test_audit_and_probe_agree_on_the_strongest_magnitude():
@@ -36,7 +41,14 @@ def test_audit_and_probe_agree_on_the_strongest_magnitude():
 
 def test_every_op_is_measured_the_way_its_spec_says():
     for name, spec in vocab.OPS.items():
-        expected = UNPROBED if name.split(".")[-1] in MAGNITUDE_FREE else EXPECTED_METHOD[spec.family]
+        base = name.split(".")[-1]
+        expected = EXPECTED_METHOD[spec.family]
+        if base in MAGNITUDE_FREE:
+            expected = UNPROBED
+        elif spec.family == "trivialaug_diff" and base in EXACT_STEPPED:
+            expected = FINITE_DIFF
+        elif expected == FINITE_DIFF and base in ENHANCE:
+            expected = TANGENT
         assert op_method(spec) == expected, name
 
 

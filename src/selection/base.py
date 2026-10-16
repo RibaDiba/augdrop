@@ -110,12 +110,15 @@ class Redundancy:
     mask_within_op:  exclude the two halves of one op (``lighter_X``/``darker_X``,
                      ``X_pos``/``X_neg``). They measure a parameterization
                      convention, not redundancy between two separate choices.
+    ci_lo:           (A, A) lower bounds of the cells' bootstrap CIs, NaN where
+                     untested. Only ``cover`` reads it. None when no bootstrap ran.
     """
 
     names: Tuple[str, ...]
     r: np.ndarray
     survives: Optional[np.ndarray] = None
     mask_within_op: bool = True
+    ci_lo: Optional[np.ndarray] = None
 
     def __post_init__(self):
         names = tuple(str(n) for n in self.names)
@@ -133,9 +136,15 @@ class Redundancy:
             survives = np.asarray(self.survives, dtype=bool)
             if survives.shape != r.shape:
                 raise ValueError(f"Redundancy: survives is {survives.shape}, expected {r.shape}")
+        ci_lo = None
+        if self.ci_lo is not None:
+            ci_lo = _as_matrix(self.ci_lo)
+            if ci_lo.shape != r.shape:
+                raise ValueError(f"Redundancy: ci_lo is {ci_lo.shape}, expected {r.shape}")
         object.__setattr__(self, "names", names)
         object.__setattr__(self, "r", r)
         object.__setattr__(self, "survives", survives)
+        object.__setattr__(self, "ci_lo", ci_lo)
         object.__setattr__(self, "mask_within_op", bool(self.mask_within_op))
 
 
@@ -281,6 +290,7 @@ class Selection(NamedTuple):
               order, followed by the exempt ops. None for a soft selector.
     exempt:   ops kept because R has no usable row for them
     pruned:   ops with a positive prior that q sets to exactly 0
+    covers:   ``cover`` only: ``(op, cover)`` pairs, op's mass moved to cover
     """
 
     names: Tuple[str, ...]
@@ -290,6 +300,7 @@ class Selection(NamedTuple):
     kept: Optional[Tuple[str, ...]] = None
     exempt: Tuple[str, ...] = ()
     pruned: Tuple[str, ...] = ()
+    covers: Tuple[Tuple[str, str], ...] = ()
 
     def as_dict(self) -> Dict[str, float]:
         return {name: float(v) for name, v in zip(self.names, self.q)}

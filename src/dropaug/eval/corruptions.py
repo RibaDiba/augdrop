@@ -198,35 +198,55 @@ def combination(image: np.ndarray, level: int, seed: int) -> np.ndarray:
     return _to_uint8(noisy)
 
 
+class ImageCorruption:
+    """One corruption at one severity, as ``(image, position) -> image`` on one (H, W, 3)
+    uint8 RGB image, where ``position`` is the image's place in the (unshuffled) pass.
+
+    The image is seeded by (seed, name, severity, position), so its draw doesn't depend
+    on the batch size or on which process applies it. ``corruption_perturbation`` applies
+    it to a unit batch in the eval's own process. A backend's ``corrupted_dataset``
+    applies it to each item as the loader reads it, in the DataLoader's workers, as
+    Sensaug's test_robust.py did (its ImageNetCTransform sat after Resize). Both see the
+    same 8-bit image at the same position, so they give the same pixels.
+    """
+
+    def __init__(self, name: str, severity: int, *, seed: int = 0, fn: Optional[CorruptFn] = None):
+        if fn is None:
+            if name != COMBINATION and name not in ALL_CORRUPTIONS:
+                raise KeyError(f"unknown corruption {name!r}")
+            if severity not in default_severities(name):
+                raise ValueError(f"{name} severity must be one of {default_severities(name)}, got {severity!r}")
+        self.name, self.severity, self.seed = name, severity, seed
+        self.fn = fn
+
+    def __call__(self, image: np.ndarray, position: int) -> np.ndarray:
+        image_seed = zlib.crc32(f"{self.seed}:{self.name}:{self.severity}:{position}".encode())
+        corrupted = np.asarray((self.fn or corrupt)(image, self.name, self.severity, image_seed))
+        if corrupted.shape != image.shape:
+            raise ValueError(
+                f"corruption {self.name!r} returned shape {corrupted.shape} for an image of "
+                f"shape {image.shape}; it must keep the image's size"
+            )
+        # Writable too: some backends hand back a read-only view, which torch warns on.
+        return np.require(corrupted, np.uint8, ["C", "W"])
+
+
 def corruption_perturbation(name: str, severity: int, *, seed: int = 0, fn: Optional[CorruptFn] = None):
     """A condition's ``perturb(images01, label, index)``: every image of the unit batch
-    through ``fn`` (default ``corrupt``) at ``severity``, on CPU at 8 bits.
+    through ``ImageCorruption(name, severity, seed=seed, fn=fn)`` (``fn`` defaults to
+    ``corrupt``), on CPU at 8 bits, one image at a time in this process.
 
-    Image j of a batch is seeded by (seed, name, severity, index + j), where ``index`` is
-    how many images the pass has seen. That makes each image's draw independent of the
-    batch size, provided the loader does not shuffle. The label passes through: none of
-    these corruptions moves pixels far enough to move a label (the benchmarks keep it).
+    Image j of a batch is at position ``index + j``, where ``index`` is how many images
+    the pass has seen. That makes each image's draw independent of the batch size,
+    provided the loader does not shuffle. The label passes through: none of these
+    corruptions moves pixels far enough to move a label (the benchmarks keep it).
     """
-    if fn is None:
-        if name != COMBINATION and name not in ALL_CORRUPTIONS:
-            raise KeyError(f"unknown corruption {name!r}")
-        if severity not in default_severities(name):
-            raise ValueError(f"{name} severity must be one of {default_severities(name)}, got {severity!r}")
-    apply = fn or corrupt
+    corrupt_image = ImageCorruption(name, severity, seed=seed, fn=fn)
 
     def perturb(images01: Tensor, label: Optional[Tensor], index: int):
         batch = (images01.detach() * 255.0).round().clamp(0, 255).to(torch.uint8)
         batch = batch.permute(0, 2, 3, 1).cpu().numpy()
-        out = []
-        for j, image in enumerate(batch):
-            image_seed = zlib.crc32(f"{seed}:{name}:{severity}:{index + j}".encode())
-            corrupted = np.asarray(apply(image, name, severity, image_seed))
-            if corrupted.shape != image.shape:
-                raise ValueError(
-                    f"corruption {name!r} returned shape {corrupted.shape} for an image of "
-                    f"shape {image.shape}; it must keep the image's size"
-                )
-            out.append(torch.from_numpy(np.ascontiguousarray(corrupted, dtype=np.uint8)))
+        out = [torch.from_numpy(corrupt_image(image, index + j)) for j, image in enumerate(batch)]
         corrupted01 = torch.stack(out).permute(0, 3, 1, 2).to(images01.device, images01.dtype) / 255.0
         return corrupted01, label
 

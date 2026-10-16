@@ -308,7 +308,11 @@ def train_mmseg(cfg, work_dir, args):
     if _rank() == 0:
         mm_cfg.dump(os.path.join(work_dir, "mmseg_config.py"))
     from mmengine.runner import Runner
+    from mmengine.utils import import_modules_from_strings
 
+    # custom_imports only runs when mmengine parses a config file; this one is built in
+    # memory, so register GpuAugSegDataPreProcessor, the loops and hooks by hand.
+    import_modules_from_strings(**mm_cfg.custom_imports)
     runner = Runner.from_cfg(mm_cfg)
     runner.val_loop  # Sensaug's: build the loops now, so a bad loop config fails at start-up
     runner.test_loop

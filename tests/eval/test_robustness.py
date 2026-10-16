@@ -56,6 +56,32 @@ def test_seg_metric_accumulates_over_batches_not_per_batch_means():
     assert whole.compute() == pytest.approx(split.compute())
 
 
+def test_seg_metric_equals_a_full_confusion_matrix():
+    # Per-class counts are the confusion matrix's diagonal and margins, so every
+    # number matches the K x K count it replaced, at ADE20K's K too.
+    k = 150
+    rng = torch.Generator().manual_seed(0)
+    target = torch.randint(0, k, (2, 16, 24), generator=rng)
+    target[:, :3] = R.IGNORE_INDEX
+    pred = torch.randint(0, k, (2, 16, 24), generator=rng)
+    pred[:, 8:] = target[:, 8:].clamp(max=k - 1)  # some agreement
+    metric = R.SegMetric(k)
+    metric.update(one_hot_scores(pred, k), target)
+
+    valid = target != R.IGNORE_INDEX
+    cm = torch.bincount(target[valid] * k + pred[valid], minlength=k * k).reshape(k, k).double().numpy()
+    intersect, area_label, area_pred = np.diag(cm), cm.sum(axis=1), cm.sum(axis=0)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        iou, acc = intersect / (area_label + area_pred - intersect), intersect / area_label
+    expected = {
+        "mIoU": 100 * np.nanmean(iou),
+        "aAcc": 100 * intersect.sum() / area_label.sum(),
+        "mAcc": 100 * np.nanmean(acc),
+    }
+    assert metric.compute() == pytest.approx(expected, rel=1e-12)
+    np.testing.assert_array_equal(metric.per_class()["IoU"], 100 * iou)
+
+
 def test_seg_metric_rejects_a_resolution_mismatch_and_stray_ids():
     metric = R.SegMetric(3)
     with pytest.raises(ValueError, match="label's resolution"):
@@ -306,6 +332,50 @@ def test_on_the_fly_corruption_runs_through_run(tmp_path):
     # Red 1/6 <-> 5/6 swap classes 0 and 2; class 1 stays at 1/2.
     assert records[1]["metrics"]["mIoU"] == pytest.approx(100.0 / 3, abs=1.0)
     assert records[1]["kind"] == "corruption" and records[1]["level_kind"] == "severity"
+
+
+class CorruptedItems(torch.utils.data.Dataset):
+    """seg_items with corrupt_image applied per item, as a backend's corrupted_dataset
+    applies it in the loader's workers."""
+
+    def __init__(self, items, corrupt_image):
+        self.items, self.corrupt_image, self.reads = items, corrupt_image, 0
+
+    def __len__(self):
+        return len(self.items)
+
+    def __getitem__(self, index):
+        self.reads += 1
+        item = dict(self.items[index])
+        image = (item["image"] * 255).round().to(torch.uint8).permute(1, 2, 0).numpy()
+        corrupted = torch.from_numpy(self.corrupt_image(image, index))
+        item["image"] = corrupted.permute(2, 0, 1).float() / 255
+        return item
+
+
+def test_a_corrupted_loader_gives_the_same_records_as_the_unit_batch(tmp_path):
+    def noisy(image, name, severity, seed):
+        # Seed-dependent, so a position mix-up between the two paths would show.
+        rng = np.random.default_rng(seed)
+        return np.clip(image.astype(int) + rng.integers(-60, 61, image.shape), 0, 255).astype(np.uint8)
+
+    items = seg_items()
+    conditions = [R.clean(), *R.corruption_conditions(["fog", corruptions.COMBINATION], [1, 2], fn=noisy)]
+    in_process = R.run(SegAdapter(), loader(items), conditions, seg_metric, str(tmp_path / "a.jsonl"))
+    built = []
+
+    def corrupted_loader(corrupt_image):
+        built.append(CorruptedItems(items, corrupt_image))
+        return loader(built[-1], batch_size=3)
+
+    in_loader = R.run(
+        SegAdapter(), loader(items), conditions, seg_metric, str(tmp_path / "b.jsonl"), corrupted_loader=corrupted_loader
+    )
+    assert [r["metrics"] for r in in_loader] == [r["metrics"] for r in in_process]
+    assert in_process[1]["metrics"] != in_process[0]["metrics"]
+    # Clean keeps the run's loader; each corruption reads its own, once per image.
+    assert len(built) == 4 and all(d.reads == len(items) for d in built)
+    assert in_loader[1]["unchanged"] is None
 
 
 # --- tables ---------------------------------------------------------------------------

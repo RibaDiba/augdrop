@@ -175,6 +175,22 @@ def test_perturbation_seeds_by_image_position_not_batch():
     assert seeds != whole
 
 
+def test_image_corruption_is_the_perturbation_one_image_at_a_time():
+    # What a loader's workers apply per item must be what the unit batch gets.
+    def shifted(image, name, severity, seed):
+        return ((image.astype(int) + seed) % 256).astype(np.uint8)
+
+    images = unit_batch(n=4)
+    batch, _ = C.corruption_perturbation("fog", 2, seed=7, fn=shifted)(images[1:], None, 1)
+    one = C.ImageCorruption("fog", 2, seed=7, fn=shifted)
+    for j in range(3):
+        image = (images[1 + j] * 255).round().to(torch.uint8).permute(1, 2, 0).numpy()
+        expected = torch.from_numpy(one(image, 1 + j)).permute(2, 0, 1).float() / 255
+        assert torch.equal(batch[j], expected)
+    with pytest.raises(KeyError):
+        C.ImageCorruption("fogg", 1)
+
+
 def test_perturbation_refuses_a_resizing_corruption():
     def crop(image, name, severity, seed):
         return image[1:]

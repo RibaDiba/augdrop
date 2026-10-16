@@ -30,8 +30,8 @@
 # Absolute and flat: SLURM opens these before the body runs, so neither a path
 # relative to the submit dir nor a per-job subdirectory works. The body moves them
 # into slurm/logs/<job-name>/ (see common.sh). slurm/logs/ must exist.
-#SBATCH --output=/gammascratch/amodak/dropaug/slurm/logs/%x.%j.out
-#SBATCH --error=/gammascratch/amodak/dropaug/slurm/logs/%x.%j.err
+#SBATCH --output=/fs/gamma-projects/pruneaug/slurm/logs/%x.%j.out
+#SBATCH --error=/fs/gamma-projects/pruneaug/slurm/logs/%x.%j.err
 
 #SBATCH --mail-user=amodak@terpmail.umd.edu
 #SBATCH --mail-type=FAIL,END
@@ -47,7 +47,7 @@ set -o pipefail
 #   host      a configs/host name (default sensaug); train.py's config check rejects
 #             a host the task's augmentation path can't apply
 #   dataset   a configs/dataset name (default cityscapes)
-#   selector  a selection.SELECTORS name (default mrmr), or `none`: the lambda=0
+#   selector  a selection.SELECTORS name, or `none` (the default): the lambda=0
 #             control, which probes and logs R but never changes the host's q
 #   seed      integer (default 0); the run's training seed, and random_k's draw
 #
@@ -94,7 +94,7 @@ set -o pipefail
 # rejected below instead of silently becoming the default.
 HOST="${1-sensaug}"
 DATASET="${2-cityscapes}"
-SELECTOR="${3-sensaug}"
+SELECTOR="${3-none}"
 SEED="${4-0}"
 BACKBONE="${BACKBONE:-segformer}"
 LAM="${LAM:-0.25}"
@@ -131,7 +131,7 @@ EXP_NAME="${EXP_NAME:-${HOST}_${_arm}_${DATASET}_${BACKBONE}_s${SEED}${RUN_TAG:+
 WORK_DIR="${WORK_DIR:-./experiments}"
 CLUSTER="${CLUSTER:-nexus}"
 TRAIN_PY="${TRAIN_PY:-train.py}"
-REPO_DIR="${REPO_DIR:-/gammascratch/amodak/dropaug}"
+REPO_DIR="${REPO_DIR:-/fs/gamma-projects/pruneaug}"
 
 cd "${REPO_DIR}" || { echo "ERROR: REPO_DIR=${REPO_DIR} does not exist" >&2; exit 1; }
 # shellcheck disable=SC1091
@@ -171,6 +171,9 @@ TRAIN_FLAGS=(
     --lam "${LAM}"
     --seed "${SEED}"
     --work-dir "${EXP_DIR}"
+    # In the preflight too: launcher is part of dropaug.yaml, so a preflight without
+    # it saved launcher none and the torchrun launch then refused the mismatch.
+    --launcher pytorch
 )
 if [ "${HOST}" = "sensaug" ]; then
     [ "${DESCENDING_MA:-1}" != "0" ] && TRAIN_FLAGS+=(--descending-MA)
@@ -212,7 +215,6 @@ echo "=== train: host=${HOST} dataset=${DATASET} selector=${SELECTOR} lam=${LAM}
 torchrun "${TORCHRUN_ARGS[@]}" \
     "${TRAIN_PY}" \
     "${TRAIN_FLAGS[@]}" \
-    --launcher pytorch \
     "${extra[@]}"
 
 TRAIN_STATUS=$?
