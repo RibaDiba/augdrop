@@ -1,0 +1,22 @@
+# TrivialAugmentWide's policy over its ops made differentiable (vocab trivialaug_diff):
+# one op per image, uniform over the 13 ops plus Identity, at one uniform bin of 31.
+# The 9 signed ops are split into _pos/_neg (1/26 each), so R has a row per direction.
+# Trainable: the mmseg preprocessor applies these ops on GPU.
+defaults:
+  - override /vocab@_global_.vocab: trivialaug_diff
+
+name: trivialaugment_diff
+num_magnitude_bins: 31     # one uniform bin per image, in training and in the probe
+probe_interval: ${probe.schedule.interval}
+probe_iters: ${probe.schedule.iters}
+control_iters: ${probe.schedule.control_iters}
+# The 18 split ops go through autograd. The four with no derivative in their
+# magnitude are torchvision's own and are faded in (probe/fade.py), as in
+# trivialaugment.yaml.
+fade:
+  ops:
+    - trivialaug_diff.Solarize
+    - trivialaug_diff.Posterize
+    - trivialaug_diff.AutoContrast
+    - trivialaug_diff.Equalize
+  at: 1.0

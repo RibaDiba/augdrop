@@ -31,11 +31,15 @@ returns a report.
 | `randaug_default` | 14 | torchvision v2 `RandAugment`'s own per-op dispatcher, on 8-bit images, `grad_mode="none"`. The 4 enhance ops also carry an exact `tangent` (below) | AutoAugment Table 6, which RandAugment inherits (degrees, factors, bits, px at 331×331) |
 | `trivialaug_wide` | 14 | torchvision v2 `TrivialAugmentWide`'s dispatcher | TrivialAugment Table 8, wide ranges |
 | `autoaugment` | 1 | `Invert`, the one AutoAugment op RandAugment dropped, via torchvision v2 `AutoAugment`'s dispatcher. AutoAugment's other 13 ops are `randaug_default`'s (same Table 6 ranges) | no magnitude |
+| `trivialaug_diff` | 22 | `trivialaug_diff.py`: `trivialaug_wide`'s 13 ops rewritten so autograd differentiates the magnitude, each of the 9 signed ops split into `_pos` / `_neg` (no Identity). The geometric ops are torchvision's affine matrix (`_get_inverse_affine_matrix`) built in torch and warped by kornia (bilinear, translate not truncated), label moved as in `geometric`; the enhance ops are torchvision's float blend with no uint8 round trip. Posterize, Solarize, AutoContrast and Equalize are `trivialaug_wide`'s own ops. `tests/vocab/test_trivialaug_diff.py` pins them against torchvision (enhance within one 8-bit level, geometric equal at NEAREST), autograd against central differences, and `BINS` against TrivialAugmentWide's | TrivialAugment Table 8, unsigned; the direction is in the name |
 
 Every op takes its magnitude at the images' dtype precision (the torchvision ops too),
-so a python float and a float32 tensor holding it give identical output.
+so a python float and a float32 tensor holding it give identical output. The torchvision
+dispatchers take their fill from `method._fill` (torchvision 0.27) or `method.fill` (0.15,
+the `sensaug` env on Nexus), through `randaug_default._fill_of`.
 `magnitude_bins(name, num_bins)` → `(magnitudes, signed)`: the bins a torchvision method
-draws a `randaug_default` / `trivialaug_wide` op's magnitude from, in the op's units. It is
+draws a `randaug_default` / `trivialaug_wide` / `trivialaug_diff` op's magnitude from, in
+the op's units (`trivialaug_diff`'s are unsigned: its sign is the `_pos` / `_neg` choice). It is
 read off torchvision's own `_AUGMENTATION_SPACE` (the families' `BINS`), not re-derived.
 torchvision's AutoAugment shares RandAugment's table, and float32 round-off at an end bin
 is clipped to `mag_range`. Checked by hand against `_AUGMENTATION_SPACE` element by element
@@ -70,6 +74,7 @@ the q-tilted one. `sensaug` and `uniform` return None.
 | `sensaug` | the 32 DIFF32 ops | the probe fires on Sensaug's round schedule (ported). The SA pdf arrives through `set_sa_pdf()` because the SA loop is not ported; `pdf()` returns it with q applied |
 | `randaugment` | `randaug_default.*` minus Identity | torchvision defaults: N=2, M=9 of 31 bins. `draw_bins`: bin M for every image |
 | `trivialaugment` | `trivialaug_wide.*` minus Identity | `draw_bins`: one uniform bin per image, shared across ops |
+| `trivialaugment_diff` | `trivialaug_diff.*` (`split_ops`) | TrivialAugmentWide's policy with the random sign made explicit: a signed op's 1/13 is split evenly between `_pos` and `_neg` (1/26 each), `none_prob` 1/14, so uniform q is TrivialAugmentWide exactly, and q can weight the two directions differently. `draw_bins` is `trivialaugment`'s; its flips are ignored. The one non-DIFF32 host that trains (`tasks/augment.py`) |
 | `autoaugment` | `randaug_default.*` ops used by the ImageNet policy, plus `autoaugment.Invert` | q tilts the 25 sub-policies; `sampling_probs()` is what the policy actually draws, not q. `draw_bins`: per op, a bin from the policy steps that apply it, weighted by step p |
 | `uniform` | any; defaults to DIFF32 | Sensaug's `--random-aug` bank |
 
@@ -87,6 +92,7 @@ randaugment and autoaugment have `ops: non_differentiable` (every op). trivialau
 fades only the four ops with no derivative in their magnitude (Solarize, Posterize,
 AutoContrast, Equalize). Its enhance ops go through their tangent, and its geometric
 ops through finite differences, which move the label with the image.
+trivialaugment_diff fades the same four (its other 18 ops go through autograd).
 sensaug and uniform have `ops: null`. A run saved before the block existed fades nothing.
 
 ## `src/probe/`: measuring G

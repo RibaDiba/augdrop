@@ -55,12 +55,12 @@ def magnitude_bins(name: str, num_bins: int) -> Tuple[Tuple[float, ...], bool]:
     """``(magnitudes, signed)``: the ``num_bins`` magnitudes op ``name``'s method draws
     from, in the op's own units, and whether the method negates them (mirrored about
     ``identity_at``) with p = 0.5. torchvision's own table; only the torchvision
-    families have one."""
+    families and ``trivialaug_diff`` (whose split ops are unsigned) have one."""
     get_op(name)
     if name not in BINS:
         raise KeyError(
-            f"op {name!r} has no magnitude bins: only the torchvision families' ops with a "
-            f"magnitude have one ({sorted(BINS)[:3]}...)"
+            f"op {name!r} has no magnitude bins: only the torchvision families' and "
+            f"trivialaug_diff's ops with a magnitude have one ({sorted(BINS)[:3]}...)"
         )
     return BINS[name](int(num_bins))
 

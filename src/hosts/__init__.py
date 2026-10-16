@@ -7,7 +7,7 @@ from .autoaugment import AutoAugmentHost
 from .base import AugHost
 from .randaugment import RandAugmentHost
 from .sensaug import SensAugHost
-from .trivialaugment import TrivialAugmentHost
+from .trivialaugment import TrivialAugmentDiffHost, TrivialAugmentHost
 from .uniform import UniformHost
 
 __all__ = [
@@ -15,6 +15,7 @@ __all__ = [
     "AutoAugmentHost",
     "RandAugmentHost",
     "SensAugHost",
+    "TrivialAugmentDiffHost",
     "TrivialAugmentHost",
     "UniformHost",
     "HOSTS",
@@ -27,6 +28,7 @@ HOSTS = {
         SensAugHost,
         RandAugmentHost,
         TrivialAugmentHost,
+        TrivialAugmentDiffHost,
         AutoAugmentHost,
         UniformHost,
     )
