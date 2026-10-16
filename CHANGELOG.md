@@ -178,3 +178,36 @@ Findings (log-level numbers, not dropaug.io artifacts):
   cityscapes image the mean |pixel change| is 0.5–1.6/255 (sharpness, blur) and 4/255
   (color_neg), vs 55–96/255 for lighter_R or noise. So color_neg's level instability
   comes from the op's weak magnitude range, not from the KID estimator.
+
+## 2026-10-15: eval at Sensaug's speed
+
+Goal: `scripts/eval.py` took ~16 h per run on ade20k without finishing (59/144
+conditions), and 1.2–1.6× Sensaug's `test_robust.py` time elsewhere, on the same
+allocation (1 GPU, 4 CPUs, full val). Sensaug's took 2.1–3.1 h on pascal_voc12 and
+ade20k (its `tr-*` jobs, 2026-09-23).
+
+### Changes
+
+- **`SegMetric` counts per class** (intersection, label, prediction), as mmseg's
+  `IoUMetric` does, instead of a K×K confusion matrix. Past 1000 bins, torch's CUDA
+  `bincount` adds every pixel with a global atomic. On ade20k (K = 150) that took 738 ms
+  per image against 11 ms for the forward pass: an op condition took 16.5 min. It now takes
+  30 s. pascal_voc12 (441 bins) was never affected.
+- **Corruptions run in the DataLoader's workers.** They ran one image at a time in the
+  main process while the GPU waited. `ImageCorruption` is one condition as a per-image
+  function seeded by position. `MMSegBackend.corrupted_dataset` applies it to each packed
+  image after Resize, where Sensaug's `ImageNetCTransform` sat, and `robustness.run`'s
+  `corrupted_loader` uses it. pascal_voc12's fog at severity 3 took 21 s (in-process runs
+  averaged ~3 min per corruption condition); zoom_blur at severity 1 still takes 3.5 min,
+  as in Sensaug (4 min).
+
+### Check (1 A5000, 4 CPUs)
+
+- Old and new metric agree to the last bit on 40 images of each dataset.
+- Corrupted images agree in 8 bits for every corruption on 8 images of each dataset
+  (the float difference, ≤ 8e-6 of a gray level, is the preprocessor's normalize round
+  trip). No val image of either dataset is padded by the preprocessor.
+- ade20k clean and Sharpness_neg@0.2 reproduce the stored records exactly. On
+  pascal_voc12 every condition, clean included, differs by ≤ 0.001 mIoU: its stored
+  records ran on an A4000.
+- `tests/eval`: 57 passed.

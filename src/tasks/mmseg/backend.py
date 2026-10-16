@@ -196,6 +196,24 @@ class MMSegBackend(TaskBackend):
             align_corners=getattr(self.model, "align_corners", False),
         )
 
+    def corrupted_dataset(self, dataset, corrupt_image):
+        """``dataset`` with ``corrupt_image(image, position)`` applied to each item's
+        image as it is read: after the pipeline's Resize and before the preprocessor,
+        where Sensaug's test_robust.py applied its ImageNetCTransform. Under a
+        DataLoader that runs in its workers, alongside the GPU. ``position`` is the
+        item's index, so an unshuffled loader gives each image the same seed, and the
+        same pixels, as ``corruption_perturbation`` on the unit batch. The one exception
+        is an image the preprocessor pads (smaller than its ``size``): this corrupts it
+        before the padding, as Sensaug did, where the unit batch already holds the pad."""
+        if self.model is None:
+            raise RuntimeError("no model: call build_model() first")
+        if not getattr(self.model.data_preprocessor, "channel_conversion", True):
+            raise ProbeError(
+                "the data preprocessor has bgr_to_rgb=False, so the loaded images would "
+                "reach the corruption in mmcv's BGR order"
+            )
+        return _CorruptedItems(dataset, corrupt_image)
+
     # --- helpers -----------------------------------------------------------------
 
     def _samples(self, batch):
@@ -209,6 +227,32 @@ class MMSegBackend(TaskBackend):
         """[0, 1] RGB back into the model's input space: Sensaug's re-normalization."""
         mean, std = _mean_std(self.model.data_preprocessor)
         return (images01 * 255.0 - mean) / std
+
+
+class _CorruptedItems(torch.utils.data.Dataset):
+    """An mmseg dataset whose packed images go through ``corrupt_image(image, index)``
+    as (H, W, 3) uint8 RGB. PackSegInputs leaves the loaded image as a (3, H, W) uint8
+    tensor in mmcv's BGR order, which the preprocessor flips to RGB later."""
+
+    def __init__(self, dataset, corrupt_image):
+        self.dataset = dataset
+        self.corrupt_image = corrupt_image
+
+    def __len__(self):
+        return len(self.dataset)
+
+    def __getitem__(self, index):
+        item = self.dataset[index]
+        inputs = item["inputs"]
+        if not torch.is_tensor(inputs) or inputs.dtype != torch.uint8 or inputs.dim() != 3 or inputs.shape[0] != 3:
+            raise ProbeError(
+                f"expected the packed image as a (3, H, W) uint8 tensor, got "
+                f"{getattr(inputs, 'dtype', type(inputs).__name__)} {tuple(getattr(inputs, 'shape', ()))}"
+            )
+        rgb = inputs.flip(0).permute(1, 2, 0).contiguous().numpy()
+        corrupted = torch.from_numpy(self.corrupt_image(rgb, index))
+        item["inputs"] = corrupted.permute(2, 0, 1).flip(0).contiguous()
+        return item
 
 
 def _mean_std(dp):

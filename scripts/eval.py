@@ -24,7 +24,9 @@ both.
 Corruptions need ``imagecorruptions`` and the combination needs ``cv2``, both optional.
 If one is missing the script exits 2 BEFORE evaluating anything, naming it. Pass
 ``--no-corruptions`` to drop the corruption and combination conditions explicitly
-(the op conditions and clean still run).
+(the op conditions and clean still run). The corruptions are applied in the
+DataLoader's workers (``eval.num_workers``; ``MMSegBackend.corrupted_dataset``), after
+the pipeline's Resize, as test_robust.py's ImageNetCTransform was.
 
 Differences from test_robust.py: the suite is ``dropaug.eval``'s (ops over the run's own
 vocab at ``eval.strengths``, not SA's adaptive level search, which is not ported); the
@@ -170,13 +172,18 @@ def run(args) -> int:
 
     from torch.utils.data import DataLoader
 
-    loader = DataLoader(
-        data.dataset,
+    loader_kwargs = dict(
         batch_size=int(ecfg.get("batch_size", 1)),
         shuffle=False,
         collate_fn=getattr(backend, "collate", None),
         num_workers=int(ecfg.get("num_workers", 0)),
     )
+    loader = DataLoader(data.dataset, **loader_kwargs)
+
+    def corrupted_loader(corrupt_image):
+        """The corruptions run in the loader's workers, as Sensaug's did."""
+        return DataLoader(backend.corrupted_dataset(data.dataset, corrupt_image), **loader_kwargs)
+
     num_classes = int(cfg.dataset.num_classes)
     try:
         arm = run_name(cfg)
@@ -192,6 +199,7 @@ def run(args) -> int:
         checkpoint=checkpoint,
         meta={"run": arm, "iter": ckpt_iter, "work_dir": work_dir, "split": data.source},
         overwrite=args.overwrite,
+        corrupted_loader=corrupted_loader if hasattr(backend, "corrupted_dataset") else None,
     )
     print(f"[eval] {len(records)} records in {out}")
     return 0
