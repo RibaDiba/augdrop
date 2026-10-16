@@ -197,6 +197,16 @@ def _per_image(magnitude, batch_size: int, dtype: torch.dtype) -> Sequence[float
     return [float(v) for v in m]
 
 
+def _fill_of(method):
+    """The fill dict torchvision's dispatcher takes: `method._fill` in recent
+    torchvision (0.27), `method.fill` in 0.15 (the sensaug env on Nexus). Same `{type: fill}`
+    shape in both."""
+    try:
+        return method._fill
+    except AttributeError:
+        return method.fill
+
+
 def _to_pixels(images: torch.Tensor) -> torch.Tensor:
     """[0, 1] float images -> the uint8 images torchvision's ops run on."""
     return (images.detach() * 255.0).round().clamp(0.0, 255.0).to(torch.uint8)
@@ -230,7 +240,7 @@ def enhance_tangent(method, transform_id: str):
             else:
                 # torchvision applies factor = 1.0 + magnitude, so factor 0 is -1.
                 d = method._apply_image_or_video_transform(
-                    x, transform_id, -1.0, method.interpolation, method._fill
+                    x, transform_id, -1.0, method.interpolation, _fill_of(method)
                 ).float()
             x = x.float()
             blended = x.mul(factor).add_(d, alpha=1.0 - factor)
@@ -267,7 +277,7 @@ def torchvision_op(method, transform_id: str, to_native: Optional[ToNative]):
             image = pixels[i]
             if not (transform_id == "Solarize" and mags[i] > _SOLARIZE_MAX_THRESHOLD):
                 image = method._apply_image_or_video_transform(
-                    image, transform_id, native, method.interpolation, method._fill
+                    image, transform_id, native, method.interpolation, _fill_of(method)
                 )
             out_images.append(image)
 
