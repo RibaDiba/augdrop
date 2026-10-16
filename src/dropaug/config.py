@@ -313,6 +313,12 @@ def check(cfg: DictConfig, *, training: bool) -> List[str]:
             build_selector(selector_name, **spec)
         except (TypeError, ValueError) as error:
             errors.append(f"selector {selector_name!r} doesn't build from {spec}: {error}")
+    if selector_name in ("cover_single", "cover_even") and name not in ("trivialaugment", "trivialaugment_diff"):
+        errors.append(
+            f"selector {selector_name!r} builds a per-op q that is only checked on a TrivialAugment "
+            f"host (one shared bin per image, so cover_single's q means 'apply the cover "
+            f"instead'); host {name!r} is not one"
+        )
     if cfg.selector.get("lambda_ramp") not in ("linear", "constant"):
         errors.append(f"selector.lambda_ramp must be linear or constant, got {cfg.selector.get('lambda_ramp')!r}")
 

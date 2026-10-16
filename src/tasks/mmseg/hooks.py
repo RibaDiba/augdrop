@@ -417,13 +417,15 @@ class ApplyWeightsHook(Hook):
             return
         if record:
             self._log_record(
-                runner, analysis, lam, applied=applied, reason=reason, q=q, pruned=selected.pruned
+                runner, analysis, lam, applied=applied, reason=reason, q=q, pruned=selected.pruned,
+                covers=selected.covers,
             )
         if applied:
             print_log(
                 f"[redundancy] {when}: {self.selector_name} at lambda={lam:.3f} "
                 f"(target {self.lam:g}, {self.lambda_ramp} ramp), max/min q spread "
-                f"{selected.spread:.1f}x" + (f", pruned {list(selected.pruned)}" if selected.pruned else ""),
+                f"{selected.spread:.1f}x" + (f", pruned {list(selected.pruned)}" if selected.pruned else "")
+                + (f", covers {dict(selected.covers)}" if selected.covers else ""),
                 logger="current",
             )
         else:
@@ -435,7 +437,7 @@ class ApplyWeightsHook(Hook):
                 level=20 if self.lam == 0 else 30,
             )
 
-    def _log_record(self, runner, analysis, lam, *, applied, reason, q=None, pruned=()) -> None:
+    def _log_record(self, runner, analysis, lam, *, applied, reason, q=None, pruned=(), covers=()) -> None:
         score = measured_red(self._redundancy(analysis), self.mode)
         stats.append_jsonl(
             os.path.join(runner.work_dir, stats.REDUNDANCY_LOG),
@@ -450,5 +452,6 @@ class ApplyWeightsHook(Hook):
                 reason=reason,
                 q=dict(zip(self.host.vocabulary(), np.asarray(q).tolist())) if applied else None,
                 pruned=list(pruned) if applied else [],
+                covers=[list(pair) for pair in covers] if applied else [],
             ),
         )

@@ -290,6 +290,7 @@ class Selection(NamedTuple):
               order, followed by the exempt ops. None for a soft selector.
     exempt:   ops kept because R has no usable row for them
     pruned:   ops with a positive prior that q sets to exactly 0
+    covers:   ``cover`` only: ``(op, cover)`` pairs, op's mass moved to cover
     """
 
     names: Tuple[str, ...]
@@ -299,6 +300,7 @@ class Selection(NamedTuple):
     kept: Optional[Tuple[str, ...]] = None
     exempt: Tuple[str, ...] = ()
     pruned: Tuple[str, ...] = ()
+    covers: Tuple[Tuple[str, str], ...] = ()
 
     def as_dict(self) -> Dict[str, float]:
         return {name: float(v) for name, v in zip(self.names, self.q)}

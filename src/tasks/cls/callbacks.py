@@ -263,6 +263,7 @@ class ApplyWeightsCallback:
                 reason=reason,
                 q=dict(zip(self.host.vocabulary(), np.asarray(q).tolist())) if applied else None,
                 pruned=list(selected.pruned) if applied else [],
+                covers=[list(pair) for pair in selected.covers] if applied else [],
             ),
         )
         if applied:
@@ -274,7 +275,8 @@ class ApplyWeightsCallback:
                 self.lam,
                 self.lambda_ramp,
                 selected.spread,
-                f", pruned {list(selected.pruned)}" if selected.pruned else "",
+                (f", pruned {list(selected.pruned)}" if selected.pruned else "")
+                + (f", covers {dict(selected.covers)}" if selected.covers else ""),
             )
         else:
             # Never silently: a q that quietly did nothing looks like a real arm.

@@ -16,6 +16,9 @@
     random_k.py        hard: k ops at random. The null band; always run it
     relevance_only.py  hard: top-k by prior, R unused. The ablation of mRMR's
                        redundancy term
+    cover.py           hard: an op covered by another (CI lower bound above tau)
+                       gives up its mass, to the cover (cover_single) or over every
+                       other op (cover_even). TrivialAugment only
     decide.py          decide(analysis, rel, selector, role=...): the training-loop
                        policy (control probes and withheld R never become q)
 
@@ -38,6 +41,7 @@ from .base import (
     pairwise,
     ramp_lambda,
 )
+from .cover import COVER_SELECTORS, CoverEven, CoverSingle, cover_pairs
 from .decide import CLEAR, KEEP, PUBLISH, decide, publication, redundancy_of
 from .dpp import DPP
 from .kl_reweight import KLReweight, measured_red, reweight
@@ -48,6 +52,9 @@ from .relevance_only import RelevanceOnly
 
 __all__ = [
     "CLEAR",
+    "COVER_SELECTORS",
+    "CoverEven",
+    "CoverSingle",
     "DPP",
     "Decline",
     "HARD_SELECTORS",
@@ -66,6 +73,7 @@ __all__ = [
     "Selector",
     "budget_from_lambda",
     "build_selector",
+    "cover_pairs",
     "decide",
     "measured_red",
     "null_band",
@@ -77,7 +85,7 @@ __all__ = [
 ]
 
 SELECTORS = {
-    cls.name: cls for cls in (KLReweight, MRMR, QPFS, DPP, RandomK, RelevanceOnly)
+    cls.name: cls for cls in (KLReweight, MRMR, QPFS, DPP, RandomK, RelevanceOnly, CoverSingle, CoverEven)
 }
 
 #: The selectors allowed to set an op to exactly 0. Everything else is held to

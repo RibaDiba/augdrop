@@ -1,0 +1,8 @@
+# Hard: the same ops as cover_single lose the same mass, but it is spread over every
+# other op in proportion to its prior (drop and renormalize). The control for
+# cover_single's destination. TrivialAugment hosts only. See src/selection/cover.py.
+# train.sbatch passes LAM (default 0.25) over this lam: submit with LAM=1.
+name: cover_even
+lam: 1.0                   # fraction of the moved op's mass taken off it; 1 prunes it
+lambda_ramp: constant      # full strength at every emission, so a moved op is pruned (q = 0) for real; a linear ramp reaches lam only at the last emission
+tau: 0.3                   # minimum CI lower bound of r for a pair to count
