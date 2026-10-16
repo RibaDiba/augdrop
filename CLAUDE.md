@@ -157,7 +157,7 @@ and `logs.py` its log writers (neither has tests yet).
 | `fdr.py` | `cluster_bootstrap_ci` (resamples whole batches; the p-value comes from the bootstrap SE), `fdr_correct(method="bh" \| "by")`, and new `fisher_z_se` / `fisher_z_ci` (the unclustered analytic reference; bootstrap SE / Fisher SE is the design effect) |
 | `redundancy.py` | `compute_red` → `RedundancyScore` (red(a), squared / abs / signed), `within_op_pairs`, `summarise` |
 | `diagnostics.py` | new: `diagnose(R, names, n_images)` → `Diagnostics`: effective rank, participation ratio, condition number, per-op VIF, Marchenko-Pastur edges and `n_signal` (eigenvalues above them). Reads only R's finite part |
-| `analyze.py` | `analyze(G, batch_ids, names)` / `analyze_sweep(sweep)` → `Analysis`: R_raw, R_scalenorm, loadings, bootstrap, `survives` (A×A), `withheld` (below `n_min`, or the >0.9 shared-factor alarm), `aliases`, `diagnostics`, and with `shrinkage=` `R_shrunk` (which then becomes `primary`) |
+| `analyze.py` | `analyze(G, batch_ids, names)` / `analyze_sweep(sweep)` → `Analysis`: R_raw, R_scalenorm, loadings, bootstrap, `survives` (A×A), `withheld` (below `n_min`, or the >0.9 shared-factor alarm), `aliases`, `diagnostics`, `ci_lo` (the bootstrap CIs' lower bounds scattered back to A×A, NaN where untested; `Redundancy.ci_lo` carries it to the selectors), and with `shrinkage=` `R_shrunk` (which then becomes `primary`) |
 | `logs.py` | `corr_matrix_log.json`, `corr_bootstrap_log.txt`, `corr_redundancy_log.txt` in Sensaug's record shapes (`stale` / `static_pruned` written empty; `unprobed`, `aliases`, `R_shrunk`, `shrinkage`, `diagnostics` and `fdr_method` added) |
 
 Not ported: `merge_rank_buffers` (no DDP), `stack_probe_buffer` (`Sweep.matrix()` does

@@ -129,6 +129,18 @@ class Analysis:
         return full
 
     @property
+    def ci_lo(self) -> Optional[np.ndarray]:
+        """The bootstrap CIs' lower bounds scattered back to (A, A), NaN for a cell that
+        was never tested. None when no bootstrap ran."""
+        if self.bootstrap is None:
+            return None
+        index = {name: i for i, name in enumerate(self.names)}
+        kept = [index[name] for name in self.bootstrap.names]
+        full = np.full((len(self.names), len(self.names)), np.nan)
+        full[np.ix_(kept, kept)] = self.bootstrap.ci_lo
+        return full
+
+    @property
     def n_survivors(self) -> Optional[int]:
         if self.bootstrap is None:
             return None

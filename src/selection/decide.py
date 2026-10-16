@@ -41,6 +41,7 @@ def redundancy_of(analysis, mask_within_op: bool = True) -> Redundancy:
         analysis.primary,
         survives=analysis.survives,
         mask_within_op=mask_within_op,
+        ci_lo=analysis.ci_lo,
     )
 
 

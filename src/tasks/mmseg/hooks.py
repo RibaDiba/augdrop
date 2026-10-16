@@ -392,6 +392,7 @@ class ApplyWeightsHook(Hook):
             analysis.primary,
             survives=analysis.survives,
             mask_within_op=self.mask_within_op,
+            ci_lo=analysis.ci_lo,
         )
 
     def _apply(
