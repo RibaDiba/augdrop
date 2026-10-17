@@ -121,6 +121,7 @@ def write_R(path, analysis, vocab) -> dict:
         shrinkage=analysis.shrinkage,
         dropped=analysis.dropped,
         unprobed=analysis.unprobed,
+        static_pruned=analysis.static_pruned,
         aliases=analysis.aliases,
         shared_factor_loadings=analysis.shared_factor_loadings,
         bootstrap=_bootstrap(analysis.bootstrap),

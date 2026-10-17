@@ -54,6 +54,7 @@ AUTOGRAD = "autograd"
 TANGENT = "tangent"  # through the vocab op's exact derivative (OpSpec.tangent)
 FINITE_DIFF = "finite_diff"
 UNPROBED = "unprobed"  # the op has no magnitude and isn't faded; its row is NaN
+STATIC_PRUNED = "static_pruned"  # the run prunes the op (AugHost.prune); not measured, NaN row
 
 # to_unit may round-trip through a normalization, so allow float slop around [0, 1].
 _UNIT_SLACK = 1e-3
@@ -276,7 +277,7 @@ def collect_grads(
 
         for name, op in ops.items():
             method = methods[name]
-            if method == UNPROBED:
+            if method in (UNPROBED, STATIC_PRUNED):
                 rows[name] = np.full(batch_size, np.nan)
                 continue
 

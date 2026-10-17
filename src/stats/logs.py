@@ -10,8 +10,9 @@ and the records ``_emit``, ``_emit_bootstrap`` and ``prune_augmentations`` built
     corr_redundancy_log.txt   JSONL, per-op red(a) and what was done with it
 
 ``aug_gradient_log.txt``, the per-batch G, is the probe's (``frozen_sweep.sweep``).
-Sensaug's ``stale`` and ``static_pruned`` fields are written as empty lists: dropaug
-has neither mechanism, and the keys stay so readers keyed on them don't break.
+Sensaug's ``static_pruned`` field lists the ops the run prunes (``prune:``,
+``Analysis.static_pruned``). Its ``stale`` is written as an empty list: dropaug has no
+backfill, and the key stays so readers keyed on it don't break.
 ``unprobed`` (ops with no magnitude, NaN rows), ``aliases``, ``R_shrunk`` /
 ``shrinkage`` (null unless asked for), ``diagnostics`` and the bootstrap's
 ``fdr_method`` are dropaug's additions.
@@ -108,7 +109,8 @@ def reset_logs(work_dir) -> None:
 
 
 def corr_matrix_record(analysis: Analysis) -> dict:
-    """One corr_matrix_log.json record: Sensaug's fields, plus ``unprobed``,
+    """One corr_matrix_log.json record: Sensaug's fields (``static_pruned`` filled,
+    ``stale`` always empty), plus ``unprobed``,
     ``aliases``, the shrunk R, the diagnostics and the sweep's labels (``probe_set``
     digest, ``probe_seed``)."""
     labels = analysis.labels
@@ -123,7 +125,7 @@ def corr_matrix_record(analysis: Analysis) -> dict:
         "R_scalenorm": analysis.R_scalenorm,
         "dropped": analysis.dropped,
         "stale": [],
-        "static_pruned": [],
+        "static_pruned": analysis.static_pruned,
         "unprobed": analysis.unprobed,
         "aliases": analysis.aliases,
         "R_shrunk": analysis.R_shrunk,
