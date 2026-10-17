@@ -74,6 +74,24 @@ set -o pipefail
 #                                   --auto-scale-lr is not needed: the builder enables
 #                                   auto_scale_lr wherever the task has a base_batch_size, as
 #                                   Sensaug's build_config did whatever the flag said.)
+#   PRUNE_OPS="blur noise"          the static prune (configs/train.yaml's prune:): these
+#                                   ops are out of training for the whole run, on any host
+#                                   (train.py --pruned-augmentations)
+#   PRUNE_RANDOM=N                  N more ops drawn at random before training, from the
+#                                   vocabulary minus PRUNE_OPS (minus lighter_H/darker_H
+#                                   under --no-inv-aug): Sensaug's `null` arm
+#                                   (--random-prune-count)
+#   PRUNE_SEED=S                    the draw's seed (default: the run's seed, so a seed sweep
+#                                   is a sweep over draws) (--random-prune-seed)
+#   HOLD_NONE_PROB=0                P(no augmentation) rises as ops are pruned (Sensaug's
+#                                   default); by default it is held (--no-hold-none-prob)
+#   PROBE_PRUNED=1                  the probe still measures the pruned ops (--probe-pruned)
+#                                   A prune adds _prune-o<N>.<hash>-r<K>[s<S>] to the run name
+#                                   (dropaug.config.prune_tag): N named ops (hash of their
+#                                   sorted names), K drawn, S when PRUNE_SEED is not the seed.
+#                                   HOLD_NONE_PROB / PROBE_PRUNED are not in it: use RUN_TAG.
+#                                   Give named ops through PRUNE_OPS, not TRAIN_ARGS, so the
+#                                   run name carries them.
 #   ALLOW_RESUME=1                  continue a run that already has a checkpoint
 #                                   (passes --resume)
 #   EVAL=0                          don't queue slurm/eval.sbatch afterwards
@@ -87,7 +105,8 @@ set -o pipefail
 #   [--cluster NAME] [--backbone NAME] [--dataset NAME] [--host NAME] [--selector NAME]
 #   [--lam F] [--seed N] [--work-dir DIR (the run directory itself)]
 #   [--launcher none|pytorch] [--resume] [--descending-MA] [--no-inv-aug] [--dry-run]
-#   [overrides ...]
+#   [--pruned-augmentations OP ...] [--random-prune-count N] [--random-prune-seed S]
+#   [--no-hold-none-prob] [--probe-pruned] [overrides ...]
 # ==========================================================================
 
 # `${1-default}`, not `${1:-default}`: an explicitly empty argument is then
@@ -126,7 +145,36 @@ if [ "${SELECTOR}" = "none" ]; then
 else
     _arm="${SELECTOR}-l${LAM}"
 fi
-EXP_NAME="${EXP_NAME:-${HOST}_${_arm}_${DATASET}_${BACKBONE}_s${SEED}${RUN_TAG:+_${RUN_TAG}}}"
+
+# The static prune. No leading zeros: the run name must spell the numbers as python does.
+read -r -a PRUNE_OP_LIST <<< "${PRUNE_OPS:-}"
+for _op in "${PRUNE_OP_LIST[@]}"; do
+    case "${_op}" in
+        *[!a-zA-Z0-9_.]*) echo "ERROR: PRUNE_OPS entry '${_op}' must be a [A-Za-z0-9_.] op name." >&2; exit 1 ;;
+    esac
+done
+PRUNE_RANDOM="${PRUNE_RANDOM:-0}"
+for _pair in "PRUNE_RANDOM:${PRUNE_RANDOM}" "PRUNE_SEED:${PRUNE_SEED-0}"; do
+    if ! [[ "${_pair#*:}" =~ ^(0|[1-9][0-9]*)$ ]]; then
+        echo "ERROR: ${_pair%%:*}='${_pair#*:}' must be a non-negative integer without leading zeros." >&2
+        exit 1
+    fi
+done
+# dropaug.config.prune_tag, spelled the same way.
+_prune=""
+if [ "${#PRUNE_OP_LIST[@]}" -gt 0 ]; then
+    _unique="$(printf '%s\n' "${PRUNE_OP_LIST[@]}" | LC_ALL=C sort -u)"
+    _prune="o$(printf '%s\n' "${_unique}" | wc -l | tr -d ' ').$(printf '%s\n' "${_unique}" | sha1sum | cut -c1-6)"
+fi
+if [ "${PRUNE_RANDOM}" != "0" ]; then
+    _draw="r${PRUNE_RANDOM}"
+    if [ -n "${PRUNE_SEED:-}" ] && [ "${PRUNE_SEED}" != "${SEED}" ]; then
+        _draw="${_draw}s${PRUNE_SEED}"
+    fi
+    _prune="${_prune:+${_prune}-}${_draw}"
+fi
+
+EXP_NAME="${EXP_NAME:-${HOST}_${_arm}_${DATASET}_${BACKBONE}_s${SEED}${_prune:+_prune-${_prune}}${RUN_TAG:+_${RUN_TAG}}}"
 
 WORK_DIR="${WORK_DIR:-./experiments}"
 CLUSTER="${CLUSTER:-nexus}"
@@ -179,6 +227,11 @@ if [ "${HOST}" = "sensaug" ]; then
     [ "${DESCENDING_MA:-1}" != "0" ] && TRAIN_FLAGS+=(--descending-MA)
     [ "${INV_AUG:-0}" = "0" ] && TRAIN_FLAGS+=(--no-inv-aug)
 fi
+[ "${#PRUNE_OP_LIST[@]}" -gt 0 ] && TRAIN_FLAGS+=(--pruned-augmentations "${PRUNE_OP_LIST[@]}")
+[ "${PRUNE_RANDOM}" != "0" ] && TRAIN_FLAGS+=(--random-prune-count "${PRUNE_RANDOM}")
+[ -n "${PRUNE_SEED:-}" ] && TRAIN_FLAGS+=(--random-prune-seed "${PRUNE_SEED}")
+[ "${HOLD_NONE_PROB:-1}" = "0" ] && TRAIN_FLAGS+=(--no-hold-none-prob)
+[ "${PROBE_PRUNED:-0}" != "0" ] && TRAIN_FLAGS+=(--probe-pruned)
 # Continue only a run that has something to continue; ALLOW_RESUME on a fresh
 # directory is just a fresh start.
 if [ -n "${ALLOW_RESUME:-}" ] && [ -f "${EXP_DIR}/last_checkpoint" ]; then
@@ -210,7 +263,7 @@ TORCHRUN_ARGS=(
 export OMP_NUM_THREADS=16
 
 echo "=== train: host=${HOST} dataset=${DATASET} selector=${SELECTOR} lam=${LAM}" \
-     "seed=${SEED} backbone=${BACKBONE} gpus=${NUM_GPUS} -> ${EXP_DIR} ==="
+     "seed=${SEED} backbone=${BACKBONE}${_prune:+ prune=${_prune}} gpus=${NUM_GPUS} -> ${EXP_DIR} ==="
 
 torchrun "${TORCHRUN_ARGS[@]}" \
     "${TRAIN_PY}" \

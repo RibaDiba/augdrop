@@ -113,6 +113,11 @@ class CollectGradientHook(Hook):
     fade         the ops faded in instead (``probe.fade``): None, ``"non_differentiable"``
                  or a list of op names. The host's ``fade:`` config block.
     fade_at      the ``a`` a faded op's row is taken at (1 = the augmented image)
+    probe_pruned also measure the ops the host prunes (``host.pruned()``, the ``prune:``
+                 block's ``probe``). False (the default, Sensaug's) leaves them out of
+                 the sweep with NaN rows labelled ``static_pruned``. Either way the R
+                 ApplyWeightsHook analyses sets them aside, so q is the same; True only
+                 puts their rows in ``aug_gradient_log.txt``
 
     The probe set is saved to ``work_dir/probe_set.json`` and, on resume, reloaded and
     checked against the dataset, so every G of one run is on the same images.
@@ -132,6 +137,7 @@ class CollectGradientHook(Hook):
         split: str = "val",
         fade=None,
         fade_at: float = 1.0,
+        probe_pruned: bool = False,
     ):
         if isinstance(magnitude, Mapping):
             self.magnitudes = probe.Magnitudes.fixed(dict(magnitude))
@@ -148,6 +154,7 @@ class CollectGradientHook(Hook):
         self.split = split
         self.fade = fade
         self.fade_at = probe.check_fade_at(fade_at)
+        self.probe_pruned = bool(probe_pruned)
 
     def before_run(self, runner) -> None:
         self.host = host_of(runner)
@@ -183,6 +190,15 @@ class CollectGradientHook(Hook):
                 f"iterations; give it probe_interval or probe_iters",
                 logger="current",
                 level=30,
+            )
+        pruned = self.host.pruned()
+        self.skip = () if self.probe_pruned else pruned
+        if pruned:
+            print_log(
+                f"[probe] the run prunes {len(pruned)} op(s), "
+                + ("still measured (probe_pruned): " if self.probe_pruned else "not measured, NaN rows: ")
+                + ", ".join(pruned),
+                logger="current",
             )
         print_log(
             f"[probe] {len(self.ops)} ops ({len(faded)} faded at a={self.fade_at:g}), probe set "
@@ -224,6 +240,7 @@ class CollectGradientHook(Hook):
             meta={"iter": iteration, "role": role},
             fade=self.fade,
             fade_at=self.fade_at,
+            skip=self.skip,
         )
 
 
@@ -304,7 +321,9 @@ class ApplyWeightsHook(Hook):
         runner.probe_sweep = None
         role = sweep.meta["role"]
 
-        analysis = stats.analyze_sweep(sweep, **self.analysis_kwargs)
+        # The pruned ops are set aside even when the probe measured them (probe_pruned),
+        # so the R a selector reads doesn't depend on that switch.
+        analysis = stats.analyze_sweep(sweep, static_pruned=self.host.pruned(), **self.analysis_kwargs)
         if is_main_process():
             stats.write_analysis(runner.work_dir, analysis)
             print_log(f"[grad-corr] iter {iteration} ({role}): {analysis.summary()}", logger="current")

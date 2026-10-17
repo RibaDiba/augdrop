@@ -162,3 +162,64 @@ def test_trivialaugment_diff_q_installs_and_holds_none_prob(name):
     else:
         for n in others + ["trivialaug_diff.Brightness_neg"]:
             assert probs[n] == pytest.approx(base[n] / (1 - moved))
+
+
+@pytest.mark.parametrize("name", COVER_SELECTORS)
+def test_priors_equal_up_to_round_off_are_a_tie(name):
+    R = redundancy({("f.A", "f.D"): (0.8, 0.6)})
+    rel = flat()
+    rel["f.A"] = np.nextafter(rel["f.A"], 0.0)  # one ulp smaller: still a tie
+    assert build_selector(name, lam=1.0).select(R, rel).covers == (("f.D", "f.A"),)
+
+
+@pytest.mark.parametrize("name", COVER_SELECTORS)
+def test_sensaug_q_is_per_op_and_keeps_each_ops_level_shape(name):
+    from hosts.sensaug import NONE_KEY
+    from sa import generate_pdf_new, none_prob_denominator
+
+    host = build_host("sensaug", max_iters=2000)
+    names = host.vocabulary()
+    ops = [n for n in names if n not in ("lighter_H", "darker_H")]  # --no-inv-aug
+    rng = np.random.default_rng(0)
+    miou = {op: {level: float(rng.uniform(30, 70)) for level in (0.2, 0.4, 0.6, 0.8)} for op in ops}
+    pdf = generate_pdf_new(miou, True, none_prob_denominator(len(ops)))
+    host.set_sa_pdf(pdf)
+    base = dict(zip(names, host.base_probs()))
+
+    R = redundancy({("blur", "noise"): (0.8, 0.5)}, names=names)
+    sel = build_selector(name, lam=1.0).select(R, dict(base))
+    assert sel.covers == (("noise", "blur"),)  # every op has the same allotment: the later name moves
+    assert sel.pruned == ("noise",)
+    host.set_weights(sel.q)
+    tilted = host.pdf()
+
+    assert tilted[NONE_KEY] == pdf[NONE_KEY]
+    assert sum(tilted.values()) == pytest.approx(1.0)
+    others = 1.0 / (1.0 - base["noise"])
+    for op in ops:
+        scale = np.array([tilted[key] / pdf[key] for key in pdf if key[0] == op])
+        if op == "noise":
+            assert (scale == 0.0).all()
+            continue
+        if name == "cover_single":
+            expected = 2.0 if op == "blur" else 1.0
+        else:
+            expected = others
+        # One factor per op: its levels keep the shape the SA pdf gave them.
+        assert scale == pytest.approx(np.full(len(scale), expected), rel=1e-12)
+
+
+@pytest.mark.parametrize(
+    "host, ok", [("sensaug", True), ("trivialaugment_diff", True), ("autoaugment", False), ("uniform", False)]
+)
+def test_config_check_accepts_cover_on_trivialaugment_and_sensaug_only(host, ok):
+    pytest.importorskip("hydra")
+    from dropaug.config import ConfigError, check, compose
+
+    for selector in COVER_SELECTORS:
+        cfg = compose([f"host={host}", f"selector={selector}"])
+        if ok:
+            check(cfg, training=False)
+        else:
+            with pytest.raises(ConfigError, match="per-op q"):
+                check(cfg, training=False)

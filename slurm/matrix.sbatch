@@ -51,7 +51,9 @@ set -o pipefail
 #   EXTRA_SBATCH_ARGS="..."       forwarded to sbatch by --submit
 #   NAME=refactor1                --submit names the array refactor1-dropaug-matrix
 #   everything train.sbatch reads (LAM, CLUSTER, DESCENDING_MA, INV_AUG, WORK_DIR, RUN_TAG,
-#   TRAIN_ARGS, ALLOW_RESUME, EVAL, ...) passes through to every task
+#   TRAIN_ARGS, ALLOW_RESUME, EVAL, PRUNE_OPS, PRUNE_RANDOM, PRUNE_SEED, HOLD_NONE_PROB,
+#   PROBE_PRUNED, ...) passes through to every task. With PRUNE_RANDOM set and
+#   PRUNE_SEED unset, each seed of the grid draws its own prune
 #
 # --submit exports the grid it listed, so every task decodes its index against
 # the same lists. Rerunning points by hand needs the same BACKBONES/HOSTS/DATASETS/

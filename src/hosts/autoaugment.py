@@ -28,6 +28,11 @@ There is no no-op draw (``none_prob`` is 0). Every draw is a sub-policy, and how
 often an image goes untouched depends on which sub-policy it drew. Reweighting
 sub-policies therefore shifts that a little. The fixed pair structure makes this
 unavoidable, and it is the one place a host does not hold "how often" exactly.
+
+**A static prune** (``AugHost.prune``) removes every sub-policy that applies a pruned
+op (at p > 0), for the whole run, as a q of 0 would. Its partner ops lose those
+applications too, and an op whose sub-policies are all removed is pruned with it
+(``prune`` returns it as implied). ``hold_none_prob`` has nothing to hold here.
 """
 
 from typing import Iterable, Optional, Sequence, Tuple
@@ -122,6 +127,8 @@ class AutoAugmentHost(AugHost):
         applied = full.sum(axis=0) > 0
         self._applications = full[:, applied]
         self._subpolicy_probs = np.full(len(self.policy), 1.0 / len(self.policy))
+        # The sub-policies a static prune leaves (prune); all of them until then.
+        self._allowed = np.ones(len(self.policy), dtype=bool)
 
         # Per op, the bins the policy applies it at, each weighted by its step's
         # probability. Sub-policies are equally likely, so their 1/25 cancels.
@@ -166,10 +173,24 @@ class AutoAugmentHost(AugHost):
         """The probability of drawing each row of ``policy``. The sampler reads this."""
         return self._subpolicy_probs.copy()
 
+    def _prune_base(self, keep: np.ndarray) -> np.ndarray:
+        """Remove every sub-policy that applies a pruned op; the base is what the rest
+        realize."""
+        allowed = ~np.any(self._applications[:, ~keep] > 0, axis=1)
+        if not allowed.any():
+            pruned = [n for n, k in zip(self._names, keep) if not k]
+            raise ValueError(f"every sub-policy applies one of {pruned}, so the prune leaves nothing to draw")
+        self._allowed = allowed
+        self._subpolicy_probs = allowed / allowed.sum()
+        realized = self._subpolicy_probs @ self._applications
+        return realized / realized.sum()
+
     def _apply_weights(self, q: np.ndarray) -> np.ndarray:
-        ratio = q / self._base  # base > 0 for every vocabulary op, by construction
+        # base > 0 for every op but a pruned one, whose q is 0 (set_weights) and whose
+        # sub-policies are out of _allowed already.
+        ratio = np.divide(q, self._base, out=np.ones_like(q), where=self._base > 0)
         # 0.0 ** 0.0 == 1.0, so a p=0 step on a dropped op does not zero its row.
-        w = np.prod(ratio[None, :] ** self._applications, axis=1)
+        w = self._allowed * np.prod(ratio[None, :] ** self._applications, axis=1)
         total = float(w.sum())
         if not np.isfinite(total) or total <= 0:
             dropped = [n for n, v in zip(self._names, q) if v == 0]

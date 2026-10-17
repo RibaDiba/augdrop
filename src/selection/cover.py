@@ -1,6 +1,6 @@
 """Hard: move a covered op's mass off it, either to the op that covers it
 (``cover_single``) or spread over every other op (``cover_even``). A first, naive cut
-at substitution, checked only with the TrivialAugment hosts.
+at substitution, checked with the TrivialAugment hosts and SensAug.
 
 New, not in Sensaug. The two selectors are one experiment: they move exactly the same
 ops by exactly the same amount and differ only in where the mass goes, so comparing
@@ -34,9 +34,13 @@ Where the mass goes:
 
 The q is per op. On TrivialAugment, where every op is drawn at the same uniform bin,
 ``cover_single``'s q is exactly "apply the cover where the method drew the moved op".
-That isn't so on a host with per-op levels (SensAug: the moved mass takes the cover's
-level shape) or sub-policies (AutoAugment: a per-op q isn't realizable), so
-``dropaug.config.check`` accepts these only with a TrivialAugment host.
+On SensAug it is per op too: ``set_weights`` scales all of an op's (op, level) entries
+by one factor, so every op keeps the level shape its SA pdf gave it, and the mass
+``cover_single`` moves is drawn at the cover's levels, not the moved op's. SensAug's
+default pdf (``sa.generate_pdf_new``) gives every op an equal allotment, so there the
+moved op of a pair is the later one by name (priors within ``_PRIOR_RTOL`` are a tie).
+On AutoAugment a per-op q isn't realizable (sub-policies), so ``dropaug.config.check``
+accepts these only with a TrivialAugment host or sensaug.
 """
 
 from __future__ import annotations
@@ -51,6 +55,12 @@ from stats.redundancy import within_op_pairs
 from .base import Redundancy, Selection, Selector, as_relevance, declined
 
 __all__ = ["COVER_SELECTORS", "CoverEven", "CoverSingle", "cover_pairs"]
+
+#: Two priors this close are a tie. SensAug's pdf gives every op the same allotment,
+#: and each op's prior is summed over its levels in that op's own mIoU order. On 200
+#: random pdfs those sums came out bit-equal, but nothing guarantees it, and round-off
+#: must not pick the moved op.
+_PRIOR_RTOL = 1e-9
 
 
 def cover_pairs(R: Redundancy, tau: float) -> List[Tuple[float, str, str]]:
@@ -117,7 +127,7 @@ class _Cover(Selector):
                 continue
             if a in pinned or b in pinned:
                 gone, partner = (b, a) if a in pinned else (a, b)
-            elif prior_of[a] != prior_of[b]:
+            elif not np.isclose(prior_of[a], prior_of[b], rtol=_PRIOR_RTOL, atol=0.0):
                 gone, partner = (a, b) if prior_of[a] < prior_of[b] else (b, a)
             else:
                 gone, partner = b, a  # a < b by name: keep a

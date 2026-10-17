@@ -126,7 +126,8 @@ class RobustValLoop(ValLoop):
     warmup_rounds         rounds before the first SA pdf; must equal the host's
     uniform               ``sa.generate_uniform_pdf`` instead (``--uniform``)
     weighted_augs         ``sa.generate_pdf_new_weighted_aug`` instead (``--weighted-augs``)
-    pruned_augmentations  ops kept out of the curve and every pdf for the whole run
+    pruned_augmentations  ops kept out of the curve and every pdf for the whole run (the
+                          ``prune:`` block's ops; the builder sets it to the host's)
     hold_none_prob        count those ops in P(none)'s denominator (``--hold-none-prob``)
     num_levels, tolerance the curve search's (Sensaug hard-coded 5 and 0.05)
     sa_curve_path         unused here; RobustBaselineValLoop's static curve

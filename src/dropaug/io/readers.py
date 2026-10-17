@@ -152,6 +152,7 @@ def read_R(path, *, vocab=None, probe_set=None, check_registry: bool = True):
         R_scalenorm=_array(head["R_scalenorm"]),
         dropped=list(head["dropped"]),
         unprobed=list(head["unprobed"]),
+        static_pruned=list(head.get("static_pruned", ())),  # optional: files before the prune lack it
         aliases=dict(head["aliases"]),
         shared_factor_loadings=_array(head.get("shared_factor_loadings")),
         bootstrap=boot,
