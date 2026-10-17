@@ -1,5 +1,46 @@
 # Changelog
 
+## 2026-10-17: static and random pruning
+
+Goal: port Sensaug's `--pruned-augmentations` and its `null` random-prune arm
+(`--random-prune-method=null --random-prune-count N`) as one mechanism that works on
+every host and under every selector, set from the training config or the job script.
+
+### Changes
+
+- **`prune:` config block** (`configs/train.yaml`): `ops` (by name), `random` (K more
+  drawn before training), `seed` (default the run's seed), `hold_none_prob` (default
+  true), `probe` (default false). `dropaug.config.prune_of(cfg)` resolves it with
+  `hosts.resolve_prune`, a pure function of the config. The draw is Sensaug's
+  `draw_random_prune`; the pool is the vocabulary minus `ops` (minus lighter_H /
+  darker_H on the sensaug host under `sa.remove_H`), one op name per unit.
+  `sa.pruned_augmentations` and `sa.hold_none_prob` moved here and are refused under
+  their old names.
+- **Hosts.** `AugHost.prune(names, hold_none_prob=)`, applied by
+  `build_host(pruned=...)`: base probability 0 for the pruned ops (they stay in the
+  vocabulary), `set_weights` refuses to revive one. The sensaug host's warmup policy
+  is pruned too (Sensaug's `GpuAugSegDataPreProcessor(pruned_ops=)`, which dropaug had
+  not ported), and `set_sa_pdf` refuses a pdf that samples a pruned op. AutoAugment
+  drops the sub-policies that apply one.
+- **Probe and R.** `probe.sweep(skip=)` gives the pruned ops NaN rows labelled
+  `static_pruned`. `stats.analyze(static_pruned=)` sets them aside even when measured
+  (`prune.probe=true`), so the selector's R doesn't depend on that switch; the logs'
+  `static_pruned` field and the R file now carry them.
+- **Entry points.** train.py: `--pruned-augmentations`, `--random-prune-count`,
+  `--random-prune-seed`, `--no-hold-none-prob`, `--probe-pruned`, and
+  `<run>/prune.json` (a run dir whose record disagrees exits 2). `train.sbatch`:
+  `PRUNE_OPS`, `PRUNE_RANDOM`, `PRUNE_SEED`, `HOLD_NONE_PROB=0`, `PROBE_PRUNED=1`, and a
+  `_prune-o<N>.<hash>-r<K>[s<S>]` run-name suffix (`dropaug.config.prune_tag`).
+  `scripts/eval.py` records `meta.pruned_ops` for `compare.diff_table`.
+- **Differences from Sensaug.** P(none) is held by default (Sensaug's default let it
+  rise; `HOLD_NONE_PROB=0` restores that, including for the SA pdf's denominator). The
+  draw's seed is a config value, not `SLURM_JOB_ID` / `os.urandom`.
+- Tests: `tests/hosts/test_prune.py`, `tests/config/test_prune_config.py`,
+  `tests/probe/test_static_pruned.py` (62 tests). Full suite on a gamma compute node
+  (`sensaug` env, torch 2.0): 612 passed, 15 skipped, 1 failed, the existing
+  `test_a_transient_failure_costs_only_its_batch` (`torch.OutOfMemoryError` doesn't
+  exist in torch 2.0). Not run end to end through mmseg training.
+
 ## 2026-10-07: first "ours" test run on Nexus
 
 Goal: four full training runs of Sensaug's own method ("ours" = `--aug-type ours`:
