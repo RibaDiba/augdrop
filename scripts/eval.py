@@ -129,7 +129,7 @@ def run(args) -> int:
     checkpoint = os.path.abspath(args.checkpoint)
     out = os.path.abspath(args.out)
 
-    from dropaug.config import RUN_FILE, ConfigError, load, run_name, to_python, vocab_of
+    from dropaug.config import RUN_FILE, ConfigError, load, prune_of, run_name, to_python, vocab_of
 
     if not os.path.isdir(work_dir):
         die(f"--work-dir {work_dir} does not exist")
@@ -189,6 +189,13 @@ def run(args) -> int:
         arm = run_name(cfg)
     except Exception:  # a hand-edited config without the keys run_name reads
         arm = None
+    run_meta = {"run": arm, "iter": ckpt_iter, "work_dir": work_dir, "split": data.source}
+    try:
+        pruning = prune_of(cfg)
+    except ConfigError as error:
+        die(str(error))
+    if pruning:  # what compare.diff_table groups a pruned run's ops by
+        run_meta["pruned_ops"] = list(pruning.ops)
     records = robustness.run(
         backend,
         loader,
@@ -197,7 +204,7 @@ def run(args) -> int:
         out,
         dataset=dataset_name,
         checkpoint=checkpoint,
-        meta={"run": arm, "iter": ckpt_iter, "work_dir": work_dir, "split": data.source},
+        meta=run_meta,
         overwrite=args.overwrite,
         corrupted_loader=corrupted_loader if hasattr(backend, "corrupted_dataset") else None,
     )

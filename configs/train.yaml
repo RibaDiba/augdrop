@@ -43,6 +43,27 @@ augment: true
 resume: false              # continue the run in work_dir (train.py --resume)
 launcher: none             # none | pytorch (torchrun)
 
+# The static prune: ops out of training for the whole run, on any host and under any
+# selector (src/hosts/prune.py). Sensaug's --pruned-augmentations and its `null`
+# random-prune arm. Pruned ops stay in the vocabulary (R and q keep their axes) with
+# base probability 0; no selector can bring one back. train.py records the result in
+# <run>/prune.json, and the run name gets a _prune-... suffix.
+prune:
+  ops: []                  # by name (--pruned-augmentations), e.g. [blur, noise]
+  random: 0                # this many more, drawn at random before training
+                           # (--random-prune-count) from the vocabulary minus `ops`
+                           # (and minus lighter_H / darker_H under sa.remove_H)
+  seed: ${seed}            # the draw's seed (--random-prune-seed): a seed sweep is a
+                           # sweep over draws, as with selector=random_k
+  hold_none_prob: true     # P(no augmentation) stays fixed and the pruned mass goes to
+                           # the surviving ops, as under a hard selector. false is
+                           # Sensaug's default: P(none) rises to 1/(A-k+1) on a uniform
+                           # host (the SA pdf's denominator follows the same key)
+  probe: false             # true: the in-training probe still measures the pruned ops
+                           # (their rows are in aug_gradient_log.txt); the R the selector
+                           # reads leaves them out either way. Post-hoc scripts/probe.py
+                           # always measures every op
+
 # scripts/eval.py: dropaug.eval's suite on a checkpoint.
 eval:
   strengths: [0.2, 0.4, 0.6, 0.8, 1.0]     # every vocab op at each (probe.strength_to_magnitude)
