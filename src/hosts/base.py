@@ -27,6 +27,13 @@ Two conventions every host shares:
 - **q replaces, it does not compound.** Derive q from ``base_probs()`` (the
   method's own distribution), not from ``sampling_probs()``. Otherwise each probe
   tilts the previous tilt.
+
+A **static prune** (``prune(names)``, Sensaug's ``--pruned-augmentations``) takes ops
+out of training for the whole run. They stay in the vocabulary, so R and q keep their
+axes, with base probability 0, and ``set_weights`` refuses a q that brings one back.
+``hold_none_prob`` (the default) keeps ``none_prob`` where it was, so the pruned mass
+goes to the surviving ops; without it the no-op draw is renormalized with them, as if
+the pruned ops had never been in the bank (Sensaug's default).
 """
 
 from collections.abc import Mapping
@@ -120,6 +127,7 @@ class AugHost:
         self._none_prob = float(none_prob)
         self._base = self._as_distribution(base_probs)
         self._probs = self._base.copy()
+        self._pruned: frozenset = frozenset()
 
         self._probe_interval, iters = resolve_gate(probe_interval, probe_iters)
         self._probe_iters = None if iters is None else frozenset(iters)
@@ -171,8 +179,18 @@ class AugHost:
         A non-finite q raises instead of being coerced. Missing data upstream is
         NaN on purpose, and it has to be resolved into a weight (typically "leave
         it at its base probability") by the caller who knows why it is missing.
+
+        A q that gives weight to a pruned op raises: a static prune holds for the
+        whole run, and a q derived from ``base_probs()`` gives those ops 0 anyway.
         """
-        self._probs = self._apply_weights(self._as_distribution(q))
+        q = self._as_distribution(q)
+        revived = [n for n, v in zip(self._names, q) if v > 0 and n in self._pruned]
+        if revived:
+            raise ValueError(
+                f"{type(self).__name__}: q gives weight to {revived}, which this run "
+                f"prunes; derive q from base_probs()"
+            )
+        self._probs = self._apply_weights(q)
 
     def _apply_weights(self, q: np.ndarray) -> np.ndarray:
         """Turn a validated, normalized q into the distribution actually sampled.
@@ -180,6 +198,67 @@ class AugHost:
         Identity here. Hosts whose sampling unit is not a single op override it.
         """
         return q
+
+    # --- the static prune --------------------------------------------------------
+
+    def prune(self, names: Iterable[str], *, hold_none_prob: bool = True) -> Tuple[str, ...]:
+        """Take ``names`` out of training for the whole run. Call it once, with the
+        whole set, before training: it clears any q in effect.
+
+        The pruned ops keep their place in ``vocabulary()`` with base probability 0,
+        the rest are renormalized, and ``set_weights`` refuses to bring them back.
+        ``hold_none_prob`` keeps ``none_prob`` as it was; False renormalizes the no-op
+        draw with the surviving ops, ``p0 / (p0 + (1 - p0) * kept)`` with ``kept`` the
+        op mass that survives (on a uniform host, ``1 / (A - k + 1)``).
+
+        Returns the ops the prune zeroed without naming them (AutoAugment drops whole
+        sub-policies, which can leave an op with nothing to apply it); ``pruned()``
+        lists them too. Raises on an unknown name, on a second call, and on a prune
+        that leaves nothing to sample.
+        """
+        names = tuple(dict.fromkeys(str(n) for n in names))
+        if not names:
+            return ()
+        if self._pruned:
+            raise RuntimeError(
+                f"{type(self).__name__}: already pruned {sorted(self._pruned)}; prune once, "
+                f"with the whole set"
+            )
+        unknown = sorted(set(names) - set(self._names))
+        if unknown:
+            raise ValueError(f"{type(self).__name__}: cannot prune {unknown}: not in the vocabulary")
+        named = set(names)
+        keep = np.array([n not in named for n in self._names])
+        if not keep.any():
+            raise ValueError(f"{type(self).__name__}: the prune names every op; nothing would be left to sample")
+
+        before = self._base
+        kept = float(before[keep].sum())
+        base = self._prune_base(keep)
+        if not hold_none_prob and self._none_prob > 0:
+            p0 = self._none_prob
+            self._none_prob = p0 / (p0 + (1.0 - p0) * kept)
+
+        implied = tuple(
+            n for n, b, was, k in zip(self._names, base, before, keep) if k and was > 0 and b == 0
+        )
+        self._pruned = frozenset(named) | frozenset(implied)
+        self._base = base
+        self._probs = base.copy()
+        return implied
+
+    def _prune_base(self, keep: np.ndarray) -> np.ndarray:
+        """The base distribution with the ops ``keep`` is False for removed. Zeroed and
+        renormalized here; a host whose sampling unit is not a single op overrides it."""
+        base = np.where(keep, self._base, 0.0)
+        total = float(base.sum())
+        if total <= 0:
+            raise ValueError(f"{type(self).__name__}: the prune leaves no op with positive probability")
+        return base / total
+
+    def pruned(self) -> Tuple[str, ...]:
+        """The ops pruned for the whole run, in vocabulary order (empty if none)."""
+        return tuple(n for n in self._names if n in self._pruned)
 
     def draw_bins(self, batch_size: int, rng: np.random.Generator) -> Optional[Bins]:
         """The magnitudes the method itself would apply, for the probe: per image, a bin
