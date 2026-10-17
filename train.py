@@ -282,14 +282,16 @@ def resolve_work_dir(cfg, args) -> str:
 
 def prune_record(cfg):
     """``prune.json``'s contents for the run's static prune, or None with nothing pruned."""
-    from dropaug.config import prune_of, vocab_of
+    from dropaug.config import host_of, prune_of, vocab_of
     from dropaug.io.hashing import vocab_hash
 
     pruning = prune_of(cfg)
     if not pruning:
         return None
     vocab = vocab_of(cfg)
-    return pruning.record(list(vocab), host=str(cfg.host.name), vocab_hash=vocab_hash(vocab))
+    # `kept` follows what the host realizes (autoaugment prunes ops by implication), `pruned` the config.
+    realized = host_of(cfg, pruning).pruned()
+    return pruning.record(list(vocab), realized, host=str(cfg.host.name), vocab_hash=vocab_hash(vocab))
 
 
 def write_prune_record(cfg, work_dir) -> None:

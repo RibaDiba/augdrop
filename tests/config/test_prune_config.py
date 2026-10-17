@@ -150,6 +150,18 @@ def test_prune_json_is_written_and_guards_the_run(tmp_path):
         train.write_prune_record(compose(["host=uniform"]), str(tmp_path))
 
 
+def test_prune_json_kept_follows_the_host_and_pruned_the_config(tmp_path):
+    """AutoAugment prunes Sharpness by implication when Invert goes: it is not kept."""
+    train = _train_module()
+    cfg = compose(["host=autoaugment", "prune.ops=['autoaugment.Invert']"])
+    train.write_prune_record(cfg, str(tmp_path))
+    record = json.loads((tmp_path / "prune.json").read_text())
+    assert record["pruned"] == ["autoaugment.Invert"]
+    assert "randaug_default.Sharpness" not in record["kept"]
+    assert "autoaugment.Invert" not in record["kept"]
+    assert record["kept"] == [n for n in vocab_of(cfg) if n not in host_of(cfg).pruned()]
+
+
 def test_no_prune_writes_no_record(tmp_path):
     train = _train_module()
     train.write_prune_record(compose(["host=uniform"]), str(tmp_path))

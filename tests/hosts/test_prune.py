@@ -272,3 +272,10 @@ def test_record_lists_what_is_kept():
     assert record["pruned"] == list(prune.ops)
     assert record["kept"] == [n for n in DIFF32_OPS if n not in prune.ops]
     assert record["drawn"] == list(prune.drawn) and record["host"] == "uniform"
+
+
+def test_record_keeps_the_configured_prune_and_follows_the_realized_one_for_kept():
+    prune = resolve_prune(DIFF32_OPS, ops=["blur"])
+    record = prune.record(DIFF32_OPS, ["blur", "noise"])
+    assert record["pruned"] == ["blur"]
+    assert record["kept"] == [n for n in DIFF32_OPS if n not in ("blur", "noise")]

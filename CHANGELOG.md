@@ -31,7 +31,9 @@ every host and under every selector, set from the training config or the job scr
   `<run>/prune.json` (a run dir whose record disagrees exits 2). `train.sbatch`:
   `PRUNE_OPS`, `PRUNE_RANDOM`, `PRUNE_SEED`, `HOLD_NONE_PROB=0`, `PROBE_PRUNED=1`, and a
   `_prune-o<N>.<hash>-r<K>[s<S>]` run-name suffix (`dropaug.config.prune_tag`).
-  `scripts/eval.py` records `meta.pruned_ops` for `compare.diff_table`.
+  `scripts/eval.py` records `meta.pruned_ops` for `compare.diff_table`. It and prune.json's
+  `kept` are `host.pruned()`, so the ops AutoAugment prunes by implication count as pruned;
+  prune.json's `pruned` stays the configured set.
 - **Differences from Sensaug.** P(none) is held by default (Sensaug's default let it
   rise; `HOLD_NONE_PROB=0` restores that, including for the SA pdf's denominator). The
   draw's seed is a config value, not `SLURM_JOB_ID` / `os.urandom`.

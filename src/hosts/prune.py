@@ -69,9 +69,14 @@ class Prune:
     def __bool__(self) -> bool:
         return bool(self.ops)
 
-    def record(self, vocabulary: Sequence[str], **extra) -> dict:
-        """``prune.json``: everything needed to repeat the prune, plus ``kept``."""
-        pruned = set(self.ops)
+    def record(self, vocabulary: Sequence[str], realized: Optional[Iterable[str]] = None, **extra) -> dict:
+        """``prune.json``: everything needed to repeat the prune, plus ``kept``.
+
+        ``pruned`` is the configured prune (``ops``). ``kept`` is the vocabulary minus
+        ``realized``, the ops the host actually stopped sampling (``AugHost.pruned()``),
+        which defaults to ``ops``. They differ on AutoAugment, where dropping the
+        sub-policies that apply a pruned op can leave another op with none."""
+        pruned = set(self.ops if realized is None else realized)
         return {
             "named": list(self.named),
             "random": self.random,

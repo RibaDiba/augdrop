@@ -108,7 +108,10 @@ true measures them, and either way the R the selector reads sets them aside, so 
 same. train.py writes `<run>/prune.json` (`Prune.record`) and refuses a run dir whose
 record disagrees; the run name gets `_prune-o<N>.<sha1 of the sorted names, 6 hex>-r<K>[s<seed>]`
 (`prune_tag`, spelled identically in `train.sbatch`); `scripts/eval.py` records
-`meta.pruned_ops`. `sa.pruned_augmentations` / `sa.hold_none_prob` moved here, and
+`meta.pruned_ops`. Both that and prune.json's `kept` follow `host.pruned()` (what the
+host realizes, so AutoAugment's implied ops are in), while prune.json's `pruned` stays the
+configured set; a prune.json written before this, on an autoaugment run with implied ops,
+no longer matches the config and a resume refuses it. `sa.pruned_augmentations` / `sa.hold_none_prob` moved here, and
 `prune_of` refuses them. `tests/hosts/test_prune.py`, `tests/config/test_prune_config.py`,
 `tests/probe/test_static_pruned.py`.
 

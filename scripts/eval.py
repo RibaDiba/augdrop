@@ -129,7 +129,7 @@ def run(args) -> int:
     checkpoint = os.path.abspath(args.checkpoint)
     out = os.path.abspath(args.out)
 
-    from dropaug.config import RUN_FILE, ConfigError, load, prune_of, run_name, to_python, vocab_of
+    from dropaug.config import RUN_FILE, ConfigError, host_of, load, prune_of, run_name, to_python, vocab_of
 
     if not os.path.isdir(work_dir):
         die(f"--work-dir {work_dir} does not exist")
@@ -192,10 +192,13 @@ def run(args) -> int:
     run_meta = {"run": arm, "iter": ckpt_iter, "work_dir": work_dir, "split": data.source}
     try:
         pruning = prune_of(cfg)
-    except ConfigError as error:
+        # What the host realizes, not what the config names: autoaugment also prunes the ops
+        # its dropped sub-policies were the only users of. compare.diff_table groups by this.
+        pruned_ops = list(host_of(cfg, pruning).pruned()) if pruning else []
+    except (ConfigError, KeyError, ValueError, TypeError) as error:
         die(str(error))
-    if pruning:  # what compare.diff_table groups a pruned run's ops by
-        run_meta["pruned_ops"] = list(pruning.ops)
+    if pruning:
+        run_meta["pruned_ops"] = pruned_ops
     records = robustness.run(
         backend,
         loader,
