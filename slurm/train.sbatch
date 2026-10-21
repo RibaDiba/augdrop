@@ -3,7 +3,10 @@
 #SBATCH --job-name=dropaug-train
 #SBATCH --nodes=1
 
-## GAMMA training config (Sensaug's train_nexus_gamma.sbatch allocation)
+## GAMMA training config (Sensaug's train_nexus_gamma.sbatch allocation): 4 GPUs a job.
+## The cap (slurm/gate.sh) is 1 A6000 job or 2 A5000 jobs in flight, so submit with
+## `bash slurm/submit.sh <name> slurm/train.sbatch ...` (GPU=a5000 for the A5000 arm),
+## which sets the card and queues behind what is ahead.
 #SBATCH --time=24:00:00
 #SBATCH --qos=huge-long
 #SBATCH --account=gamma
@@ -40,7 +43,7 @@ set -o pipefail
 
 # ==========================================================================
 # train.sbatch -- one dropaug training run on 4 GPUs, then its robustness eval
-# queued as a separate 1-GPU job. Ported from Sensaug's train_nexus_gamma.sbatch.
+# queued as a separate 1-GPU job (exempt from the job cap). Ported from Sensaug's train_nexus_gamma.sbatch.
 #
 #   sbatch slurm/train.sbatch [host] [dataset] [selector] [seed]
 #
@@ -190,6 +193,7 @@ cd "${REPO_DIR}" || { echo "ERROR: REPO_DIR=${REPO_DIR} does not exist" >&2; exi
 # shellcheck disable=SC1091
 source "${REPO_DIR}/slurm/common.sh"
 group_logs "${EXP_NAME}"
+gate_check_running || exit 1
 
 [ -f "${TRAIN_PY}" ] || { echo "ERROR: no ${TRAIN_PY} under ${REPO_DIR}" >&2; exit 1; }
 [ -f "configs/cluster/${CLUSTER}.yaml" ] || {
@@ -282,7 +286,8 @@ if [ "${TRAIN_STATUS}" -ne 0 ]; then
 fi
 
 # The eval is its own 1-GPU job rather than a step here: dropaug.eval has no DDP,
-# so running it inside this allocation would idle three A6000s for hours.
+# so running it inside this allocation would idle three GPUs for hours; it is also
+# exempt from the job cap, which this job is not.
 if [ "${EVAL:-1}" != "0" ]; then
     sbatch -J "eval-${EXP_NAME}" "${REPO_DIR}/slurm/eval.sbatch" "${EXP_DIR}" \
         || echo "WARNING: could not queue slurm/eval.sbatch for ${EXP_DIR}; submit it by hand." >&2
