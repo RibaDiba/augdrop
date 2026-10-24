@@ -1,5 +1,23 @@
 # Changelog
 
+## 2026-10-19: Slurm job cap
+
+Goal: everything this repo sends to Slurm is at most one A6000 job or two A5000 jobs in
+flight, with later submissions queued behind earlier ones. Jobs keep their GPU counts
+(train and matrix 4, probe 1).
+
+### Changes
+
+- **`slurm/gate.sh`** (new): `gate_sbatch` sets the GPU type, takes the GPU count from the
+  script's `#SBATCH --gres` line, and adds `--dependency=afterany:` on every in-flight
+  train/probe/matrix job (told apart by command path) that does not fit beside the new
+  one; `gate_check_running` is the start-of-job backstop for a bare `sbatch`. Budget 2
+  per job: A6000 costs 2, A5000 costs 1, an array costs 2. `eval.sbatch` is exempt.
+- **`matrix.sbatch --submit`** submits the array at `%1` (A6000) or `%2` (`GPU=a5000`)
+  through the gate; `MAX_PARALLEL` is ignored, and `POINTS=3,17` reruns chosen indices.
+  **`submit.sh`** goes through the gate too (`GPU=a5000` for the A5000 arm).
+  **`probe.sbatch`** names its GPU type (was an untyped `gpu:1`). `tests/slurm/`.
+
 ## 2026-10-17: static and random pruning
 
 Goal: port Sensaug's `--pruned-augmentations` and its `null` random-prune arm

@@ -13,6 +13,18 @@ Numbers: every number a doc or paper reports as a finding must have a row in
 `FACTS.md` (measured / inherited / derived, with its source). Add the row when you
 cite the number. A measured row cites a `dropaug.io` artifact with its hashes.
 
+**HARD RULE: the Slurm job cap.** Everything this repo sends to Slurm (train, probe,
+matrix) is **at most ONE job on A6000s (`rtxa6000`) OR TWO jobs on A5000s (`rtxa5000`) in
+flight at a time. Never a mix, never more.** A training job keeps its 4 GPUs (probe has
+1); the cap is on how many jobs run, not on GPUs per job. A job submitted past the cap
+waits for the ones ahead (`--dependency=afterany`), like a queue. `eval.sbatch` is the
+one exemption. This is the owner's most important standing instruction: never submit with
+a bare `sbatch`, never pass `--gres` / `-G` / `--gpus*` / `--dependency` to get around
+it, never raise a matrix throttle, and never write a new sbatch script that skips the
+gate. Submit with `bash slurm/submit.sh <name> slurm/train.sbatch ...` (`GPU=a5000` for
+the A5000 arm; default a6000) or `bash slurm/matrix.sbatch --submit`. See
+`slurm/gate.sh` and the `slurm/` section.
+
 ## `src/vocab/`: what an augmentation is
 
 Every op is an `OpSpec` (`op.py`) called as `spec.apply(images, magnitude, label)`
@@ -362,6 +374,27 @@ Ported from Sensaug's `job_scripts/` (Della is no longer used). The checkout is 
 to be at `/fs/gamma-projects/pruneaug` (`REPO_DIR`). The `#SBATCH --output` lines
 hard-code `slurm/logs/` under it, and that directory must exist before you submit.
 Every script reads its knobs from env vars, which are documented in each script's header.
+
+**The job cap (`slurm/gate.sh`, the hard rule at the top of this file).** In flight there
+is at most one A6000 job or two A5000 jobs, never a mix. A job costs 2 (A6000) or 1
+(A5000) of a budget of 2, whatever its GPU count; an array costs all of it. A job's GPU
+count is the one in its script's `#SBATCH --gres=gpu:<type>:N` line (train and matrix 4,
+probe 1, at most 4); the gate sets the type. It is enforced twice. At submission,
+`gate_sbatch` (used by `submit.sh` and `matrix.sbatch --submit`) reads `squeue` for this
+repo's train/probe/matrix jobs (told apart by command path under `slurm/`, so other
+repos' jobs are not counted) and makes the new job wait (`afterany`) for every in-flight
+job older than the ones that fit beside it. It refuses `--gres`, `-G`, `--gpus*` and
+`--dependency` in extra sbatch flags, and fails rather than guess if `squeue` fails.
+Submissions are serialized on `slurm/logs/.gate.lock`. At job start, `gate_check_running`
+(train and probe bodies) refuses to run if the running jobs already exceed the cap, which
+catches a bare `sbatch`; that check comes after the allocation, so a bypass still holds
+its GPUs for a few seconds. A matrix array is submitted with `%1` (A6000) or `%2`
+(A5000), and `MAX_PARALLEL` is ignored. `eval.sbatch` is neither gated nor counted. A
+job whose gres has no rtxa6000/rtxa5000 type, or more than 4 GPUs, counts as more than
+the whole budget. The queue is stricter than it needs to be: a new job waits for every
+older in-flight job except the ones that fit beside it, so a slot can idle while one of
+two jobs outlives the other. `tests/slurm/test_gate.py` runs the real bash against
+stand-in `squeue` / `sbatch`.
 The entry points they call are `train.py`, `scripts/probe.py` and `scripts/eval.py`; each
 one's docstring documents its flags. `scripts/probe.py` probes a dropaug run
 (`--work-dir`, rebuilt from its `dropaug.yaml`, with its own host's ops) or any mmseg
@@ -373,11 +406,13 @@ without building a model. Only the sensaug method reads an SA snapshot
 
 | file | what |
 |---|---|
-| `train.sbatch` | `[host] [dataset] [selector] [seed]`, 4×A6000, torchrun. From `train_nexus_gamma.sbatch`. Selector `none` is the λ=0 control. The run dir is `experiments/<host>_<selector>-l<λ>_<dataset>_<backbone>_s<seed>`, and the script refuses to resume an existing run unless `ALLOW_RESUME=1`. With host `sensaug` it passes `--descending-MA --no-inv-aug`, as Sensaug's sbatch did on every run (`DESCENDING_MA=0` / `INV_AUG=1` turn them off). The static prune: `PRUNE_OPS="a b"`, `PRUNE_RANDOM=K`, `PRUNE_SEED`, `HOLD_NONE_PROB=0`, `PROBE_PRUNED=1` (train.py's `--pruned-augmentations` / `--random-prune-count` / `--random-prune-seed` / `--no-hold-none-prob` / `--probe-pruned`), and the run dir gets `prune_tag`'s suffix. Afterwards it queues `eval.sbatch` as a separate 1-GPU job |
+| `train.sbatch` | `[host] [dataset] [selector] [seed]`, 4 GPUs, torchrun. From `train_nexus_gamma.sbatch`. Selector `none` is the λ=0 control. The run dir is `experiments/<host>_<selector>-l<λ>_<dataset>_<backbone>_s<seed>`, and the script refuses to resume an existing run unless `ALLOW_RESUME=1`. With host `sensaug` it passes `--descending-MA --no-inv-aug`, as Sensaug's sbatch did on every run (`DESCENDING_MA=0` / `INV_AUG=1` turn them off). The static prune: `PRUNE_OPS="a b"`, `PRUNE_RANDOM=K`, `PRUNE_SEED`, `HOLD_NONE_PROB=0`, `PROBE_PRUNED=1` (train.py's `--pruned-augmentations` / `--random-prune-count` / `--random-prune-seed` / `--no-hold-none-prob` / `--probe-pruned`), and the run dir gets `prune_tag`'s suffix. Afterwards it queues `eval.sbatch` as a separate 1-GPU job |
 | `probe.sbatch` | `<exp_dir>`: a post-hoc probe of one checkpoint of a dropaug run (`CKPT=best\|last\|path`) into `<exp_dir>/probe/<ckpt>[_<PROBE_TAG>]`. Or `<checkpoint.pth> <backbone> <dataset> <method>`: any checkpoint, probed with that method's ops, into `<ckpt dir>/probe/<ckpt>_<method>[_<PROBE_TAG>]` (`CLUSTER`, `DATA_ROOT`, `MAGNITUDES_PATH`). It refuses a directory that already holds a gradient log, because two Gs in one file would pool |
 | `eval.sbatch` | `<exp_dir>`: `dropaug.eval` on one checkpoint → `<exp_dir>/eval/<ckpt>.jsonl`. Resumes on resubmit |
-| `matrix.sbatch` | array over `HOSTS` × `DATASETS` × `SELECTORS` × `SEEDS`, one `train.sbatch` per task. `bash slurm/matrix.sbatch` lists the grid; `--submit` submits it |
-| `common.sh` | sourced by all four: log grouping into `slurm/logs/<job-name>/`, conda/module setup, checkpoint resolution |
+| `matrix.sbatch` | array over `HOSTS` × `DATASETS` × `SELECTORS` × `SEEDS`, one 4-GPU `train.sbatch` per task, at `%1` (A6000) or `%2` (`GPU=a5000`). `bash slurm/matrix.sbatch` lists the grid; `--submit` submits it through the gate; `POINTS=3,17` reruns chosen indices |
+| `gate.sh` | the job cap: `gate_sbatch`, `gate_deps`, `gate_check_running`, `gate_array_throttle` (sourced by `common.sh`, `submit.sh`, `matrix.sbatch`) |
+| `submit.sh` | `[GPU=a5000] bash slurm/submit.sh <name> <script> [args]`: sbatch with the name prefixed to the job name, through the gate. `eval.sbatch` passes through ungated |
+| `common.sh` | sourced by all four: log grouping into `slurm/logs/<job-name>/`, conda/module setup, checkpoint resolution, and `gate.sh` |
 
 ## What this repo is for
 
