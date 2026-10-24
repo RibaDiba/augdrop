@@ -414,6 +414,47 @@ without building a model. Only the sensaug method reads an SA snapshot
 | `submit.sh` | `[GPU=a5000] bash slurm/submit.sh <name> <script> [args]`: sbatch with the name prefixed to the job name, through the gate. `eval.sbatch` passes through ungated |
 | `common.sh` | sourced by all four: log grouping into `slurm/logs/<job-name>/`, conda/module setup, checkpoint resolution, and `gate.sh` |
 
+## Parked ideas (not started, low priority)
+
+**Shard the probe sweep across DDP ranks.** Today every rank sweeps the whole probe set
+(`tasks/mmseg/hooks.py` docstring; Sensaug's sharding and gather are not ported), so on a
+4-GPU job three GPUs repeat the first one's work, and a probe is a large share of a run's
+wall time. Sharding is the way to make probing cheaper without changing what it measures.
+It must not change G, and a naive version would in three places:
+
+- **Magnitudes.** `frozen_sweep.sweep` seeds one generator per sweep and advances it across
+  batches (`rng = default_rng(probe_seed)`, one `_draw` per batch). Fixed and relative
+  magnitudes are constants, so they are safe. A host with `draw_bins` (trivialaugment_diff,
+  randaugment, trivialaugment, autoaugment) draws a random bin per image, so a rank that
+  starts its own generator would give its first image the draw image 0 gets today. Draw the
+  whole probe set's magnitudes up front and slice them per rank, or advance each rank's
+  generator past the images before its slice.
+- **Padding.** Do not shard with a `DistributedSampler`: it pads to equal sizes by repeating
+  images, and a duplicated column changes R. Slice `probe_set.chunks(batch_size)` explicitly.
+- **Order.** Pearson r ignores image order, but the cluster bootstrap resamples batches by
+  index under a fixed seed. Gather back into ProbeSet order (keeping batches as separate
+  entries), which is also the order of `aug_gradient_log.txt`.
+
+Op randomness is not a problem: `apply_op` reseeds `torch.manual_seed(op_seed(probe_seed,
+name))` on every call, so at batch size 1 an image gets the same draw on any rank. Expect
+float tolerance, not bit equality (some CUDA backward kernels are not deterministic).
+Acceptance test, as sbatch jobs: `scripts/probe.py` on one checkpoint unsharded and
+sharded; magnitudes and ids equal, G within tolerance, R equal, bootstrap CIs identical.
+Put it in `tests/probe/` once it exists.
+
+**Probe at every val eval** (`probe.schedule.interval: ${task.val_interval}`; on sensaug,
+`corr_cadence=1`). Not worth it on its own: R moves slowly between the probes the current
+runs have, so adjacent probes mostly repeat each other, and each costs far more than a val
+eval. Do it after sharding, and in two narrower forms: the early probes as `control_iters`
+(logged, never a q: a model that early is not the one the selector should act on), and a
+persistence gate for `cover`, which is stateless by design and sits on its `tau` threshold
+(in the VOC trivialaugment_diff run the same pair cleared it on some probes and not
+others). On sensaug the probe magnitudes follow the SA snapshot, which shifts at each curve
+re-search, so R between rounds would mix model drift with a magnitude change; separate
+those first. Measure R's probe-to-probe stability before relying on either claim: so far it
+is a correlation of R's off-diagonal between consecutive probes, not of the selected pairs,
+and it is not in FACTS.md.
+
 ## What this repo is for
 
 `../Sensaug` (GitHub `RibaDiba/SensAug`) built a **gradient-based sensitivity probe**
