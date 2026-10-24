@@ -4,12 +4,16 @@
                          model -> one G, stashed on the runner as ``probe_sweep``
     ApplyWeightsHook     on that G: ``stats.analyze_sweep`` -> the logs -> a
                          ``selection`` selector -> ``host.set_weights(q)``
+    PruneHook            the NMS arm instead (``selection.nms``): R_residual with no
+                         statistical gate -> NMS by loss increase -> the pruned set M
+                         grows -> ``host.set_weights`` with M zeroed
 
 Replaces Sensaug's ``CollectGradientHook`` (grad_hook.py) and
 ``PerturbationSensitivityAnalysisHookWithGradients`` (grad_sens_analysis.py) plus the
 Lever 3 consumer in ``GradCorrValLoop``. Both hooks act in ``after_train_iter`` on the
 same iteration, and ApplyWeightsHook must see the sweep CollectGradientHook just took,
-so their priorities are load-bearing: NORMAL (50) runs before LOW (70).
+so their priorities are load-bearing: NORMAL (50) runs before LOW (70). PruneHook takes
+ApplyWeightsHook's place, at the same priority, when the selector is ``nms``.
 
 With the SA loop (``loops.RobustValLoop``) the split is Sensaug's: the hooks publish,
 and the loop applies. CollectGradientHook probes at the magnitudes the loop last
@@ -40,6 +44,8 @@ Config::
     ]
 """
 
+import json
+import math
 import os
 from collections.abc import Mapping
 from typing import Optional, Union
@@ -53,16 +59,28 @@ from mmengine.registry import HOOKS
 import probe
 import sa
 import stats
-from selection import CLEAR, KEEP, Redundancy, build_selector, measured_red, publication, ramp_lambda
+from selection import (
+    CLEAR,
+    KEEP,
+    NMS,
+    TAU,
+    Redundancy,
+    build_selector,
+    measured_red,
+    prune_weights,
+    publication,
+    ramp_lambda,
+)
 from vocab import get_op
 
 from ..magnitudes import probe_magnitudes
 from .backend import MMSegBackend, unwrap
 
-__all__ = ["ApplyWeightsHook", "CollectGradientHook", "host_of"]
+__all__ = ["ApplyWeightsHook", "CollectGradientHook", "PruneHook", "host_of"]
 
 GRADIENT_LOG = "aug_gradient_log.txt"
 PROBE_SET_FILE = "probe_set.json"
+PRUNED_FILE = "pruned_ops.json"
 
 
 def host_of(runner):
@@ -80,6 +98,14 @@ def host_of(runner):
 
 def _resuming(runner) -> bool:
     return bool(getattr(runner, "_resume", False))
+
+
+def _sa_driven(runner, host) -> bool:
+    """Whether an SA loop (loops.RobustValLoop) applies q, by calling the hook's
+    ``reweight`` after installing each round's pdf, rather than the hook itself.
+    runner._val_loop, not the val_loop property, which would build the loop. A training
+    run has built it by now; anything else leaves a config dict here."""
+    return bool(getattr(runner._val_loop, "applies_lever3", False)) and hasattr(host, "set_sa_pdf")
 
 
 def _progress(runner, iteration: int) -> float:
@@ -258,6 +284,11 @@ class ApplyWeightsHook(Hook):
     ):
         selector = dict(selector or {"type": "kl_reweight", "lam": 0.0})
         self.selector_name = selector.pop("type")
+        if self.selector_name == NMS.name:
+            raise ValueError(
+                "selector nms ranks ops by loss increase and latches its prune; it runs "
+                "through PruneHook, which tasks.mmseg.config puts here in its place"
+            )
         self.lam = float(selector.pop("lam", 0.0))
         self.selector_kwargs = selector
         # How red(a) is scored for the publication rule: the selector's own mode, as
@@ -286,11 +317,7 @@ class ApplyWeightsHook(Hook):
         # loop (loops.RobustValLoop) on an SA host, this hook only publishes, and the
         # loop calls reweight() after installing each round's pdf. Anything else (the
         # uniform host, a stock val loop) has no SA round, and q is set here.
-        # runner._val_loop, not the val_loop property, which would build the loop. A
-        # training run has built it by now; anything else leaves a config dict here.
-        self.sa_driven = bool(getattr(runner._val_loop, "applies_lever3", False)) and hasattr(
-            self.host, "set_sa_pdf"
-        )
+        self.sa_driven = _sa_driven(runner, self.host)
         # The R every SA round re-applies until an emission replaces or clears it
         # (selection.publication: a control or skipped R leaves it in place, a withheld
         # or unusable one clears it, as in Sensaug).
@@ -451,3 +478,166 @@ class ApplyWeightsHook(Hook):
                 pruned=list(pruned) if applied else [],
             ),
         )
+
+
+@HOOKS.register_module()
+class PruneHook(Hook):
+    """The NMS arm (``selection.nms``): prune the ops R says are redundant, with no
+    statistical gate, and keep them pruned for the rest of the run.
+
+    On the sweep CollectGradientHook just took: ``stats.analyze_sweep`` with
+    ``residual_rank=True`` and no bootstrap or n_min -> the logs -> NMS over the ops not
+    yet pruned, by loss increase -> M grows -> q is the host's prior with M zeroed. A
+    control probe is measured and logged and changes nothing. With an SA loop, M is
+    applied to every round's fresh pdf (``reweight``), as ApplyWeightsHook's q is.
+
+    M goes to ``work_dir/pruned_ops.json`` at every active probe and is reloaded on
+    resume, so a resumed run doesn't train on ops it had pruned. (A resumed
+    ApplyWeightsHook run forgets its q until the next probe; this arm's prune is
+    latched, so it must not.)
+
+    Two health checks log a warning and change nothing: tau inside the chance ceiling
+    of the largest cell at this many images (``stats.null_max_bound``), and a mean
+    off-diagonal cell of R far from 0.
+
+    tau             NMS's cutoff on R_residual (``selection.TAU``, Cohen's 0.5)
+    mask_within_op  the two halves of one op never suppress each other
+    """
+
+    priority = "LOW"
+
+    def __init__(self, tau: float = TAU, mask_within_op: bool = True):
+        # Fails at startup on a bad tau.
+        self.selector = NMS(tau=tau)
+        self.mask_within_op = mask_within_op
+
+    def before_run(self, runner) -> None:
+        self.host = host_of(runner)
+        self.sa_driven = _sa_driven(runner, self.host)
+        self.path = os.path.join(runner.work_dir, PRUNED_FILE)
+        self.pruned, self.history = (), []
+        if _resuming(runner) and os.path.exists(self.path):
+            with open(self.path) as f:
+                saved = json.load(f)
+            self.pruned, self.history = tuple(saved["pruned"]), list(saved["history"])
+            print_log(f"[nms] resumed with {len(self.pruned)} ops pruned: {list(self.pruned)}", logger="current")
+            # An SA host has no pdf yet; the first SA round's reweight() applies M.
+            if self.pruned and not self.sa_driven:
+                self._install("resume")
+        elif not _resuming(runner) and is_main_process():
+            stats.reset_logs(runner.work_dir)
+            if os.path.exists(self.path):
+                os.remove(self.path)
+
+    def after_train_iter(self, runner, batch_idx, data_batch=None, outputs=None) -> None:
+        sweep = getattr(runner, "probe_sweep", None)
+        iteration = runner.iter + 1
+        if sweep is None or sweep.meta.get("iter") != iteration:
+            return
+        runner.probe_sweep = None
+        role = sweep.meta["role"]
+
+        analysis = stats.analyze_sweep(sweep, residual_rank=True, bootstrap=False, n_min=0)
+        if is_main_process():
+            stats.write_analysis(runner.work_dir, analysis)
+            print_log(f"[nms] iter {iteration} ({role}): {analysis.summary()}", logger="current")
+            self._health(analysis)
+        if role != "active":
+            print_log(
+                f"[nms] control probe at iter {iteration}: R logged as the baseline, nothing pruned",
+                logger="current",
+            )
+            return
+
+        selection, result = self.selector.run(
+            Redundancy(analysis.names, analysis.primary, mask_within_op=self.mask_within_op),
+            dict(zip(self.host.vocabulary(), self.host.base_probs())),
+            score=dict(zip(analysis.names, analysis.loss_increase)),
+            pruned=self.pruned,
+        )
+        # Every rank holds rank 0's M: each rank analysed its own sweep.
+        decision = [(result, selection.applied, selection.reason)]
+        broadcast_object_list(decision, src=0)
+        result, applied, reason = decision[0]
+        self.pruned = result.pruned
+        self.history.append({"iter": iteration, "new": list(result.new)})
+
+        if is_main_process():
+            stats.write_json_atomic(
+                self.path,
+                {"selector": NMS.name, "tau": self.selector.tau, "pruned": list(self.pruned), "history": self.history},
+            )
+            stats.append_jsonl(
+                os.path.join(runner.work_dir, stats.REDUNDANCY_LOG),
+                {
+                    "iter": iteration,
+                    "checkpoint": analysis.labels.get("checkpoint"),
+                    "role": role,
+                    "selector": NMS.name,
+                    "matrix": "R_residual",
+                    "mask_within_op": bool(self.mask_within_op),
+                    "names": analysis.names,
+                    **result.record(),
+                    "applied": applied,
+                    "reason": reason,
+                },
+            )
+            suppressed = ", ".join(f"{op} (r={r:.2f} with {by})" for op, (by, r) in result.suppressed.items())
+            print_log(
+                f"[nms] iter {iteration}: pruned {suppressed or 'nothing new'} at tau={self.selector.tau:g}; "
+                f"{len(self.pruned)} pruned in all",
+                logger="current",
+            )
+        # With an SA loop, the round at this iteration applies M to its fresh pdf.
+        if not self.sa_driven:
+            self._install(f"iter {iteration}")
+
+    def reweight(self, runner) -> None:
+        """M on the pdf the SA loop just installed. With M empty, or a pdf that gives
+        none of M any mass, the pdf trains as generated (the host's q is cleared)."""
+        if not self.pruned:
+            self.host.clear_weights()
+            return
+        self._install(f"SA round at iter {runner.iter}", clear_on_decline=True)
+
+    def _install(self, when: str, *, clear_on_decline: bool = False) -> None:
+        """``host.set_weights`` with M zeroed. Every rank holds the same M and the same
+        host prior, so every rank installs the same q."""
+        selection = prune_weights(dict(zip(self.host.vocabulary(), self.host.base_probs())), self.pruned)
+        applied, reason = selection.applied, selection.reason
+        if applied:
+            try:
+                self.host.set_weights(selection.q)
+            except (RuntimeError, ValueError) as error:
+                # Declined, not raised: this runs mid-training on every rank.
+                applied, reason = False, f"host refused q: {error}"
+        if not applied and clear_on_decline:
+            self.host.clear_weights()
+        if not is_main_process() or not self.pruned:
+            return
+        if applied:
+            print_log(f"[nms] {when}: {list(selection.pruned)} at q = 0", logger="current")
+        else:
+            print_log(f"[nms] {when}: M NOT applied: {reason}", logger="current", level=30)
+
+    def _health(self, analysis) -> None:
+        """Log-only checks on R_residual: they warn, and never gate the prune."""
+        n_ops = len(analysis.names) - len(analysis.unprobed) - len(analysis.aliases) - len(analysis.dropped)
+        bound = stats.null_max_bound(n_ops, analysis.n_images)
+        if math.isfinite(bound) and bound >= self.selector.tau:
+            print_log(
+                f"[nms] tau={self.selector.tau:g} is inside the noise: at {analysis.n_images} images the "
+                f"largest of {n_ops} ops' pairs reaches {bound:.2f} by chance (95% union bound)",
+                logger="current",
+                level=30,
+            )
+        # Three standard errors of one null cell: the mean of many cells should sit far
+        # closer to 0 than that.
+        mean = analysis.mean_offdiag
+        if analysis.n_images > 1 and math.isfinite(mean) and abs(mean) > 3 / math.sqrt(analysis.n_images - 1):
+            print_log(
+                f"[nms] mean off-diagonal R is {mean:+.3f}, far from 0: a shared factor got "
+                f"through the regression, and R may be ranking image difficulty",
+                logger="current",
+                level=30,
+            )

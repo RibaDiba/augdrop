@@ -13,8 +13,9 @@ dataset) is the base, and the builder fills in everything the yaml groups own:
                ``host=dict(type=<name>, **kwargs)`` and ``augment``
     probe/ selector/
                ``custom_hooks``: ``CollectGradientHook`` (NORMAL) and
-               ``ApplyWeightsHook`` (LOW), the priorities their classes carry. The
-               host's ``fade:`` block goes to CollectGradientHook's ``fade`` / ``fade_at``
+               ``ApplyWeightsHook`` (LOW), the priorities their classes carry, or
+               ``PruneHook`` (LOW) for selector nms. The host's ``fade:`` block goes
+               to CollectGradientHook's ``fade`` / ``fade_at``
     sa/        host=sensaug only: ``RobustIterBasedTrainLoop`` / ``RobustValLoop`` /
                ``SubsetTestLoop``. Any other host keeps mmengine's stock loops
     task/      max_iters, val and checkpoint intervals, AMP, ``cfg_options`` (dotted
@@ -316,14 +317,24 @@ def build(cfg, work_dir: str, *, launcher: str = "none", resume: bool = False):
     analysis = probe.get("analysis") or {}
     apply_kwargs = {k: analysis[k] for k in ("mask_within_op", *_ANALYSIS_KEYS) if k in analysis}
     selector = selector_spec(cfg)
-    out.custom_hooks = list(out.get("custom_hooks") or []) + [
-        dict(type="CollectGradientHook", **collect),
-        dict(
+    if selector["selector"]["type"] == "nms":
+        # The NMS arm has no statistical gate, so none of the analysis keys but the
+        # within-op mask reach it, and its prune is latched (hooks.PruneHook).
+        weights = dict(
+            type="PruneHook",
+            tau=selector["selector"].get("tau", 0.5),
+            mask_within_op=analysis.get("mask_within_op", True),
+        )
+    else:
+        weights = dict(
             type="ApplyWeightsHook",
             selector=selector["selector"],
             lambda_ramp=selector["lambda_ramp"],
             **apply_kwargs,
-        ),
+        )
+    out.custom_hooks = list(out.get("custom_hooks") or []) + [
+        dict(type="CollectGradientHook", **collect),
+        weights,
     ]
     # merge into the task's own custom_imports (convnext, vitsam: mmpretrain.models)
     existing = out.get("custom_imports") or {}

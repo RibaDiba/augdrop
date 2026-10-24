@@ -2,8 +2,8 @@
 
     backend.py     MMSegBackend: build_model / load_ckpt / probe_data, and the probe's
                    (and dropaug.eval's) adapter over an mmseg segmentor
-    hooks.py       CollectGradientHook, ApplyWeightsHook: mmengine glue around probe,
-                   stats and selection
+    hooks.py       CollectGradientHook, ApplyWeightsHook, PruneHook (the nms arm):
+                   mmengine glue around probe, stats and selection
     transforms.py  GpuAugSegDataPreProcessor: the host's draws applied on GPU after
                    collation (Sensaug's DIFF32 ops only, for now)
     config.py      build(): dropaug's composed config -> the mmengine Config of a run

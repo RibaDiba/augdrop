@@ -14,7 +14,8 @@ rel     ``{op: relevance}``, in the order q comes back in. Pass the host's own
         is 0 (one the host excludes) always gets q = 0.
 budget  how many of the measured ops a hard selector keeps. A soft selector
         ignores it. A hard selector built with ``lam`` derives it as Sensaug's mRMR
-        arm did, ``ceil(A_measured / (1 + lam))``, when budget is None.
+        arm did, ``ceil(A_measured / (1 + lam))``, when budget is None. ``nms`` takes
+        none: a threshold on R decides, and it also needs a per-op score (nms.py).
 
 Rules every selector keeps. They are Sensaug's ``DOWNWEIGHT_METHODS`` contract
 (``sensaug/loops/grad_corr_loop.py``):

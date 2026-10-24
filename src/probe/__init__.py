@@ -5,7 +5,8 @@ setting. Turning G into R (per-image scale normalization, correlation, bootstrap
 FDR) is analysis, not measurement, and is not in this package.
 
     probe_set.py        ProbeSet: the fixed, hashed image subset every G is measured on
-    grad_collect.py     collect_grads(adapter, batch, ops, magnitudes) -> rows of G
+    grad_collect.py     collect_grads(adapter, batch, ops, magnitudes) -> rows of G;
+                        probe_batch adds each image's loss under every op
     finite_diff.py      fd_grad: the fallback for ops autograd can't differentiate
     fade.py             the other one: d loss / d a of x + a * (op(x, m) - x)
     frozen_sweep.py     sweep / sweep_checkpoints: checkpoints x probe set -> G
@@ -52,7 +53,15 @@ method's sampling policy, and the probe doesn't need one):
 from .fade import FADE, FADE_RULES, NON_DIFFERENTIABLE, check_fade_at, faded_ops
 from .finite_diff import DEFAULT_STEP, fd_grad
 from .frozen_sweep import Magnitudes, Sweep, strength_to_magnitude, sweep, sweep_checkpoints
-from .grad_collect import ModelAdapter, ProbeError, collect_grads, preserved_rng, resolve_methods
+from .grad_collect import (
+    ModelAdapter,
+    ProbeBatch,
+    ProbeError,
+    collect_grads,
+    preserved_rng,
+    probe_batch,
+    resolve_methods,
+)
 from .magnitude_sweep import sweep_magnitudes
 from .probe_set import ProbeSet
 
@@ -63,6 +72,7 @@ __all__ = [
     "NON_DIFFERENTIABLE",
     "Magnitudes",
     "ModelAdapter",
+    "ProbeBatch",
     "ProbeError",
     "ProbeSet",
     "Sweep",
@@ -71,6 +81,7 @@ __all__ = [
     "faded_ops",
     "fd_grad",
     "preserved_rng",
+    "probe_batch",
     "resolve_methods",
     "strength_to_magnitude",
     "sweep",

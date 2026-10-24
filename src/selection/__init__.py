@@ -16,12 +16,16 @@
     random_k.py        hard: k ops at random. The null band; always run it
     relevance_only.py  hard: top-k by prior, R unused. The ablation of mRMR's
                        redundancy term
+    nms.py             hard: greedy NMS by loss increase, suppressing at R > tau, with
+                       no statistical gate. M only grows; prune_weights re-applies it.
+                       Needs a score, so it runs through PruneHook (new)
     decide.py          decide(analysis, rel, selector, role=...): the training-loop
                        policy (control probes and withheld R never become q)
 
-Every hard selector ranks the same pool (ops with a positive prior and a usable row
-in R) and keeps the same number at the same budget, so their results are directly
-comparable, with ``random_k`` across seeds (``null_band``) as the baseline.
+Every budgeted hard selector ranks the same pool (ops with a positive prior and a usable
+row in R) and keeps the same number at the same budget, so their results are directly
+comparable, with ``random_k`` across seeds (``null_band``) as the baseline. ``nms`` has
+no budget: its threshold decides how many ops go.
 
 Named ``selection``, not ``select``: ``select`` is a stdlib module that
 ``subprocess`` imports, and ``src/`` sits first on ``sys.path``.
@@ -42,6 +46,7 @@ from .decide import CLEAR, KEEP, PUBLISH, decide, publication, redundancy_of
 from .dpp import DPP
 from .kl_reweight import KLReweight, measured_red, reweight
 from .mrmr import MRMR
+from .nms import NMS, TAU, NmsResult, prune_weights
 from .qpfs import QPFS
 from .random_k import RandomK, null_band
 from .relevance_only import RelevanceOnly
@@ -56,6 +61,8 @@ __all__ = [
     "KLReweight",
     "MODES",
     "MRMR",
+    "NMS",
+    "NmsResult",
     "PUBLISH",
     "QPFS",
     "RandomK",
@@ -64,12 +71,14 @@ __all__ = [
     "SELECTORS",
     "Selection",
     "Selector",
+    "TAU",
     "budget_from_lambda",
     "build_selector",
     "decide",
     "measured_red",
     "null_band",
     "pairwise",
+    "prune_weights",
     "publication",
     "ramp_lambda",
     "redundancy_of",
@@ -77,7 +86,7 @@ __all__ = [
 ]
 
 SELECTORS = {
-    cls.name: cls for cls in (KLReweight, MRMR, QPFS, DPP, RandomK, RelevanceOnly)
+    cls.name: cls for cls in (KLReweight, MRMR, QPFS, DPP, RandomK, RelevanceOnly, NMS)
 }
 
 #: The selectors allowed to set an op to exactly 0. Everything else is held to

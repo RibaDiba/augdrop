@@ -55,3 +55,4 @@ None yet. No probe, R or eval has been run on real data through dropaug.
 | D5 | Eigenvalue range of R for independent ops from sampling noise alone | 0.47–1.73 at A/N = 0.1 | (1 ± √(A/N))²; `stats.marchenko_pastur_edges` |
 | D6 | P(none) of the SA pdf (`generate_pdf_new`), 4 levels per op | 0.185 at 30 ops, 0.234 at 10 (not 1/(A+1)); 15.8% of each op's allotment leaks to none | 1 − A/(A+1) · Σ_{i<4} betabinom.pmf(i; 4, 0.75, 1); `sa.pdf` |
 | D7 | P(none) of `generate_pdf_new_weighted_aug`, 4 levels per op | 0.0559 at 30 ops, 0.0675 at 10 | 1 − 0.95 · Σ_{i<4A} betabinom.pmf(i; 4A, 0.75, 1); `sa.pdf` |
+| D8 | Chance ceiling of the largest off-diagonal cell of a Spearman R (95%, one-sided union bound) | 0.37 at A=32, N=100; 0.17 at A=32, N=500. τ = 0.5 clears it from N ≥ 57 at A=32 (N ≥ 44 at A=14) | z_{1−0.05/m}/√(N−1), m = A(A−1)/2: Spearman's null variance 1/(N−1) and its normal limit; `stats.null_max_bound` |

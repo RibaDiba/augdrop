@@ -199,6 +199,11 @@ class ApplyWeightsCallback:
         selector = dict(selector or {"type": "kl_reweight", "lam": 0.0})
         self.host = host
         self.selector_name = selector.pop("type")
+        if self.selector_name == "nms":
+            raise ValueError(
+                "selector nms ranks ops by loss increase and latches its prune; only the mmseg "
+                "PruneHook runs it so far"
+            )
         self.lam = float(selector.pop("lam", 0.0))
         self.selector_kwargs = selector
         # Fail at construction on an unknown selector, ramp or analysis keyword.

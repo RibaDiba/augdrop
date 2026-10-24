@@ -14,13 +14,17 @@ anything is computed on G, every other op is analysed as if they did not exist, 
 they come back as NaN rows and columns of R, listed in ``unprobed`` and not in
 ``dropped``. On a G with no NaN row the two chains agree exactly.
 
-Three additions, none of which changes R on a DIFF32 G:
+Four additions, none of which changes R_raw or R_scalenorm on a DIFF32 G:
 
 - exact aliases (``dedup``) are merged before anything else, and come back as NaN rows
   listed in ``aliases``. The DIFF32 ops have none, so there the chain is unchanged.
 - ``shrinkage=`` (opt-in) adds a shrunk copy of the primary R (``shrinkage``), which
   then becomes the R a decision is taken on.
 - every R gets its ``diagnostics`` (effective rank, VIF, condition number).
+- ``residual_rank=`` (opt-in) adds R_residual, the shared factor regressed out and then
+  rank-correlated (``residual``), which then becomes the R a decision is taken on. The
+  NMS arm uses it with no bootstrap. With ``d_loss`` (the probe's loss increase,
+  ``Sweep.loss_matrix()``) every analysis also carries each op's mean loss increase.
 """
 
 from dataclasses import dataclass, field
@@ -39,6 +43,7 @@ from .corr import (
 from .dedup import ALIAS_RTOL, find_aliases
 from .diagnostics import Diagnostics, diagnose
 from .fdr import FDR_METHODS, cluster_bootstrap_ci, fdr_correct
+from .residual import residual_rank_corr
 from .shrinkage import METHODS as SHRINKAGE_METHODS
 from .shrinkage import shrink
 
@@ -75,7 +80,15 @@ class Analysis:
                  ``normalize_per_image`` is off
     R_shrunk     R_scalenorm (or R_raw) shrunk as ``shrinkage`` records; None unless
                  asked for
-    dropped      ops measured but with no variance across images (Sensaug's ``dropped``)
+    R_residual   Spearman R of G with the shared factor regressed out (``residual``);
+                 None unless asked for
+    residual_slopes
+                 (A,) each op's slope on its leave-one-out factor, with R_residual
+    loss_increase
+                 (A,) each op's mean loss increase over the probe images, from
+                 ``d_loss``; None without it, NaN for an op with no losses
+    dropped      ops measured but with no usable row in ``primary``: no variance across
+                 images (Sensaug's ``dropped``), or for R_residual also no scale
     unprobed     ops with an all-NaN row in G, never measured
     aliases      ``{alias: representative}``: ops whose row of G duplicated an earlier
                  op's, analysed once under the representative's name
@@ -98,16 +111,33 @@ class Analysis:
     bootstrap: Optional[Bootstrap] = None
     R_shrunk: Optional[np.ndarray] = None
     shrinkage: Optional[dict] = None
+    R_residual: Optional[np.ndarray] = None
+    residual_slopes: Optional[np.ndarray] = None
+    loss_increase: Optional[np.ndarray] = None
     diagnostics: Optional[Diagnostics] = None
     labels: dict = field(default_factory=dict)
 
     @property
     def primary(self) -> Optional[np.ndarray]:
-        """The R a decision is taken on: R_shrunk when shrinkage was asked for, else
+        """The R a decision is taken on: R_residual or R_shrunk when asked for, else
         R_scalenorm when normalizing, else R_raw."""
+        if self.R_residual is not None:
+            return self.R_residual
         if self.R_shrunk is not None:
             return self.R_shrunk
         return self.R_scalenorm if self.normalize_per_image else self.R_raw
+
+    @property
+    def mean_offdiag(self) -> float:
+        """The mean finite off-diagonal cell of ``primary``. For R_residual this is the
+        health check: an independent pair sits close to 0 (``residual``), so a mean far
+        from it says a shared factor got through the regression."""
+        r = self.primary
+        if r is None:
+            return float("nan")
+        cells = r[~np.eye(r.shape[0], dtype=bool)]
+        cells = cells[np.isfinite(cells)]
+        return float(cells.mean()) if cells.size else float("nan")
 
     @property
     def max_loading(self) -> float:
@@ -176,6 +206,8 @@ class Analysis:
             text += f" fdr_survivors={self.n_survivors}/{self.n_cells}"
         if self.shrinkage is not None:
             text += f" {self.shrinkage['method']}={self.shrinkage['intensity']:.3f}"
+        if self.R_residual is not None:
+            text += f" residual_rank mean_offdiag={self.mean_offdiag:.3f}"
         if self.diagnostics is not None:
             text += (
                 f" eff_rank={self.diagnostics.effective_rank:.1f}/{len(self.diagnostics.used)}"
@@ -198,6 +230,8 @@ def analyze(
     merge_aliases: bool = True,
     alias_rtol: float = ALIAS_RTOL,
     shrinkage: Optional[str] = None,
+    residual_rank: bool = False,
+    d_loss: Optional[np.ndarray] = None,
     labels: Optional[dict] = None,
 ) -> Analysis:
     """Sensaug's ``_emit`` chain on one (A ops x N images) G.
@@ -211,11 +245,21 @@ def analyze(
     "ledoit_wolf" or "schafer_strimmer" (``stats.shrinkage``), applied to the G the
     primary R comes from; Schafer-Strimmer shrinks toward ``closure_null(K)`` when
     normalizing, else toward 0.
+
+    ``residual_rank`` adds R_residual (``residual.residual_rank_corr``), which becomes
+    ``primary``. It has no bootstrap and no shrinkage, so it refuses both. ``d_loss`` is
+    the (A, N) loss increase aligned to G (``Sweep.loss_matrix()``); its row means are
+    ``loss_increase``.
     """
     if fdr_method not in FDR_METHODS:
         raise ValueError(f"unknown FDR method {fdr_method!r}, expected one of {sorted(FDR_METHODS)}")
     if shrinkage is not None and shrinkage not in SHRINKAGE_METHODS:
         raise ValueError(f"unknown shrinkage {shrinkage!r}, expected one of {sorted(SHRINKAGE_METHODS)}")
+    if residual_rank and (bootstrap or shrinkage is not None):
+        raise ValueError(
+            "residual_rank is a decision R of its own: its cells are not the ones the "
+            "bootstrap tests or shrinkage pulls. Pass bootstrap=False and no shrinkage."
+        )
     d_grad = np.asarray(d_grad, dtype=np.float64)
     probe_ids = np.asarray(probe_ids)
     names = [str(n) for n in names]
@@ -223,6 +267,10 @@ def analyze(
         raise ValueError(f"G is {d_grad.shape} but {len(names)} op names were given")
     if probe_ids.shape != (d_grad.shape[1],):
         raise ValueError(f"probe_ids is {probe_ids.shape}, expected ({d_grad.shape[1]},)")
+    if d_loss is not None:
+        d_loss = np.asarray(d_loss, dtype=np.float64)
+        if d_loss.shape != d_grad.shape:
+            raise ValueError(f"d_loss is {d_loss.shape}, expected G's shape {d_grad.shape}")
 
     finite = np.isfinite(d_grad)
     unprobed_rows = ~finite.any(axis=1)
@@ -246,6 +294,11 @@ def analyze(
         aliases={names[j]: names[i] for j, i in sorted(alias_of.items())},
         labels=dict(labels or {}),
     )
+    if d_loss is not None:
+        # NaN propagates: an op is either measured on every image or on none.
+        result.loss_increase = (
+            d_loss.mean(axis=1) if n_images else np.full(n_ops, np.nan)
+        )
     if n_images < n_min:
         result.skipped = (
             f"the sweep holds only {n_images} images (n_min={n_min}); discarded rather "
@@ -305,14 +358,24 @@ def analyze(
         result.R_shrunk = _expand(shrunk.r, probed, n_ops)
         result.shrinkage = {"method": shrinkage, "intensity": shrunk.intensity, "target": shrunk.target}
 
+    if residual_rank:
+        r_res, dropped_res, slopes = residual_rank_corr(g)
+        result.R_residual = _expand(r_res, probed, n_ops)
+        result.residual_slopes = np.full(n_ops, np.nan)
+        result.residual_slopes[probed] = slopes
+        result.dropped = [names[probed[i]] for i in dropped_res]
+
     result.diagnostics = diagnose(result.primary, names, n_images=n_images)
     return result
 
 
 def analyze_sweep(sweep, **kwargs) -> Analysis:
     """``analyze`` on a ``probe.Sweep`` (duck-typed: stats does not import the probe),
-    with the sweep's provenance as the labels every log record carries."""
+    with the sweep's provenance as the labels every log record carries, and its loss
+    increase as ``d_loss`` when it has one."""
     d_grad, probe_ids = sweep.matrix()
+    if "d_loss" not in kwargs and hasattr(sweep, "loss_matrix"):
+        kwargs["d_loss"] = sweep.loss_matrix()
     labels = {
         "checkpoint": sweep.checkpoint,
         "probe_set": sweep.probe_set,

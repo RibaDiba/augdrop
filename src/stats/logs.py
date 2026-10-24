@@ -13,8 +13,9 @@ and the records ``_emit``, ``_emit_bootstrap`` and ``prune_augmentations`` built
 Sensaug's ``stale`` and ``static_pruned`` fields are written as empty lists: dropaug
 has neither mechanism, and the keys stay so readers keyed on them don't break.
 ``unprobed`` (ops with no magnitude, NaN rows), ``aliases``, ``R_shrunk`` /
-``shrinkage`` (null unless asked for), ``diagnostics`` and the bootstrap's
-``fdr_method`` are dropaug's additions.
+``shrinkage`` (null unless asked for), ``R_residual`` / ``residual_slopes`` (null
+unless asked for), ``loss_increase``, ``mean_offdiag``, ``diagnostics`` and the
+bootstrap's ``fdr_method`` are dropaug's additions.
 """
 
 import json
@@ -109,8 +110,8 @@ def reset_logs(work_dir) -> None:
 
 def corr_matrix_record(analysis: Analysis) -> dict:
     """One corr_matrix_log.json record: Sensaug's fields, plus ``unprobed``,
-    ``aliases``, the shrunk R, the diagnostics and the sweep's labels (``probe_set``
-    digest, ``probe_seed``)."""
+    ``aliases``, the shrunk and residual R, the loss increase, the diagnostics and the
+    sweep's labels (``probe_set`` digest, ``probe_seed``)."""
     labels = analysis.labels
     return {
         "checkpoint": labels.get("checkpoint"),
@@ -128,6 +129,10 @@ def corr_matrix_record(analysis: Analysis) -> dict:
         "aliases": analysis.aliases,
         "R_shrunk": analysis.R_shrunk,
         "shrinkage": analysis.shrinkage,
+        "R_residual": analysis.R_residual,
+        "residual_slopes": analysis.residual_slopes,
+        "loss_increase": analysis.loss_increase,
+        "mean_offdiag": analysis.mean_offdiag,
         "diagnostics": None if analysis.diagnostics is None else analysis.diagnostics.as_dict(),
         "shared_factor_loadings": analysis.shared_factor_loadings,
         "magnitude_source": labels.get("magnitude_source"),

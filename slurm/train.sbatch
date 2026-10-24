@@ -56,7 +56,8 @@ set -o pipefail
 # Env knobs:
 #   BACKBONE=segformer   picks the task (train.py --backbone): segformer, pspnet,
 #                        convnext, deeplabv3plus, swin, mae, vit, ... (configs/task/)
-#   LAM=0.25             forced to 0 for selector none. Normalised like
+#   LAM=0.25             forced to 0 for selector none; defaults to 1 for nms, which
+#                        prunes and refuses any other value. Normalised like
 #                        dropaug.config.run_name does (%g), so LAM=1.0 names the run -l1
 #   CLUSTER=nexus        configs/cluster/<CLUSTER>.yaml: data and checkpoint paths
 #   WORK_DIR=./experiments          the run goes in WORK_DIR/EXP_NAME
@@ -97,7 +98,11 @@ DATASET="${2-cityscapes}"
 SELECTOR="${3-sensaug}"
 SEED="${4-0}"
 BACKBONE="${BACKBONE:-segformer}"
-LAM="${LAM:-0.25}"
+if [ "${SELECTOR}" = "nms" ]; then
+    LAM="${LAM:-1}"
+else
+    LAM="${LAM:-0.25}"
+fi
 
 for _pair in "host:${HOST}" "dataset:${DATASET}" "selector:${SELECTOR}" "BACKBONE:${BACKBONE}"; do
     case "${_pair#*:}" in
