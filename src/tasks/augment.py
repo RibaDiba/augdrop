@@ -13,16 +13,23 @@ Sensaug's, read off the host:
   ``host.sampling_probs()`` with ``host.none_prob`` for "none", level uniform on
   [0, 1], as ``RandomAlphaTrainTransform`` did
 
-Both are Sensaug's DIFF32 ops in their unsigned [0, 1] units. One more host trains
-on its method's own policy:
+Both are Sensaug's DIFF32 ops in their unsigned [0, 1] units. Three more hosts train
+on their method's own policy, over its ops made differentiable (``BIN_HOSTS``). Each
+draw is an op from ``host.sampling_probs()`` (q applied) with ``host.none_prob`` for
+"none", at the magnitude of the bin ``host.draw_bins`` gives it, read through
+``vocab.magnitude_bins``, in the op's own units:
 
-- ``trivialaugment_diff``: TrivialAugmentWide's. One draw per image from
-  ``host.sampling_probs()`` (q applied) with ``host.none_prob`` for "none", at the
-  magnitude of one uniform bin (``host.draw_bins``, read through
-  ``vocab.magnitude_bins``), in the op's own units
+- ``trivialaugment_diff``: TrivialAugmentWide's. One draw per image, at one uniform bin
+- ``randaugment_diff``: RandAugment's at its published (N, M). ``num_ops`` draws per
+  image, applied in turn, each at level M; geometric ops move the label
+- ``augmix_diff``: AugMix's as Sensaug ran it (``MIX_HOSTS``). ``mixture_width`` chains
+  of 1 to 3 draws, each at a bin uniform on the first ``severity``, mixed with the clean
+  image by ``host.draw_mix``'s weights. The label is NOT moved, by any chain: Sensaug's
+  AugMix augmented the image and left the mask as it was (hosts/augmix.py)
 
-``check_trainable`` refuses every other host: the torchvision methods (randaugment,
-trivialaugment, autoaugment) until they have training-time ops of their own.
+``augment_batch`` applies whichever of these a host has. ``check_trainable`` refuses
+every other host: the torchvision methods (randaugment, trivialaugment, autoaugment),
+whose ops are 8-bit torchvision calls, train through their ``*_diff`` hosts.
 """
 
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -33,9 +40,11 @@ import torch
 __all__ = [
     "BIN_HOSTS",
     "LEVEL_JITTER",
+    "MIX_HOSTS",
     "NO_OP",
     "TRAINABLE_HOSTS",
     "apply_draws",
+    "augment_batch",
     "check_trainable",
     "sample_draws",
 ]
@@ -47,7 +56,10 @@ NO_OP = "none"
 TRAINABLE_HOSTS = ("sensaug", "uniform")
 
 #: The hosts that sample at their method's own magnitude bins (``draw_bins``).
-BIN_HOSTS = ("trivialaugment_diff",)
+BIN_HOSTS = ("trivialaugment_diff", "randaugment_diff", "augmix_diff")
+
+#: The BIN_HOSTS that mix chains of draws with the clean image (``draw_mix``).
+MIX_HOSTS = ("augmix_diff",)
 
 #: Sensaug's level jitter on a pdf draw, so the pdf's discrete levels are not the
 #: only magnitudes ever trained on.
@@ -133,6 +145,43 @@ def apply_draws(rgb01, labels: Optional[torch.Tensor], draws: Sequence[Tuple[str
     return rgb01, labels
 
 
+def augment_batch(host, rgb01, labels: Optional[torch.Tensor], ops: Dict, rng=np.random):
+    """One training batch augmented by ``host``'s policy: ``num_ops`` rounds of
+    ``sample_draws`` / ``apply_draws`` (1 for every host but RandAugment's), or for a
+    ``MIX_HOSTS`` host its chains mixed with the clean image (``augmix``)."""
+    if host.name in MIX_HOSTS:
+        return augmix(host, rgb01, ops, rng), labels
+    for _ in range(int(getattr(host, "num_ops", 1))):
+        draws = sample_draws(host, int(rgb01.shape[0]), rng)
+        rgb01, labels = apply_draws(rgb01, labels, draws, ops)
+    return rgb01, labels
+
+
+def augmix(host, rgb01, ops: Dict, rng=np.random):
+    """AugMix as torchvision's ``AugMix.forward`` computes it, per image: ``m0 * x +
+    sum_i w_i * chain_i(x)``, with the depths and weights from ``host.draw_mix`` and every
+    step of every chain one ``sample_draws`` draw (an image whose chain is shorter gets
+    ``NO_OP``). No label goes in, so the geometric ops move the image alone; the caller
+    keeps the mask as it was, as Sensaug's AugMix did. The mix stays in float, where
+    torchvision casts it back to uint8."""
+    batch_size = int(rgb01.shape[0])
+    seed = rng.integers(0, 2**31 - 1) if hasattr(rng, "integers") else rng.randint(0, 2**31 - 1)
+    depths, clean, chains = host.draw_mix(batch_size, np.random.default_rng(int(seed)))
+
+    def per_image(weights):
+        return torch.as_tensor(weights, dtype=rgb01.dtype, device=rgb01.device).view(-1, 1, 1, 1)
+
+    mix = per_image(clean) * rgb01
+    for i in range(depths.shape[1]):
+        chain = rgb01
+        for step in range(int(depths[:, i].max())):
+            draws = sample_draws(host, batch_size, rng)
+            draws = [draw if step < depths[b, i] else (NO_OP, 0.0) for b, draw in enumerate(draws)]
+            chain, _ = apply_draws(chain, None, draws, ops)
+        mix = mix + per_image(chains[:, i]) * chain
+    return mix
+
+
 def check_trainable(host, ops) -> None:
     """Refuse a host whose draws can't be applied. Sensaug's sampling is over its
     differentiable ops in unsigned [0, 1] units, and a ``BIN_HOSTS`` host's over ops
@@ -162,6 +211,7 @@ def check_trainable(host, ops) -> None:
         f"training augments with Sensaug's differentiable ops on the {TRAINABLE_HOSTS} hosts, "
         f"or with its method's binned ops on the {BIN_HOSTS} hosts, only; got host {host.name!r}"
         + (f" with ops {foreign[:3]}..." if foreign else "")
-        + ". The torchvision methods are not wired for training yet (trivialaugment_diff "
-        "trains TrivialAugment). augment=False probes them on a clean-trained model."
+        + ". The torchvision methods train through their differentiable hosts "
+        "(trivialaugment_diff, randaugment_diff, augmix_diff). augment=False probes them on "
+        "a clean-trained model."
     )
