@@ -25,7 +25,9 @@ one, by finite differences otherwise; ops with no magnitude get a NaN row. A swe
 magnitude and differentiated along the fade (fade.py), which needs no magnitude. Every
 row that isn't faded is d loss / d strength, signed toward a stronger augmentation
 (``grad_collect.strength_sign``), so an image a method negated a signed op on enters R
-with the same sign as the others.
+with the same sign as the others. A sweep's ``skip`` names ops the run prunes
+(``AugHost.prune``): they are not measured, and their rows are NaN, labelled
+``static_pruned``.
 
 A MODEL ADAPTER wraps the model being probed (not an ``AugHost``: a host is a
 method's sampling policy, and the probe doesn't need one):
@@ -54,6 +56,7 @@ from .fade import FADE, FADE_RULES, NON_DIFFERENTIABLE, check_fade_at, faded_ops
 from .finite_diff import DEFAULT_STEP, fd_grad
 from .frozen_sweep import Magnitudes, Sweep, strength_to_magnitude, sweep, sweep_checkpoints
 from .grad_collect import (
+    STATIC_PRUNED,
     ModelAdapter,
     ProbeBatch,
     ProbeError,
@@ -70,6 +73,7 @@ __all__ = [
     "FADE",
     "FADE_RULES",
     "NON_DIFFERENTIABLE",
+    "STATIC_PRUNED",
     "Magnitudes",
     "ModelAdapter",
     "ProbeBatch",

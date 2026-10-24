@@ -83,6 +83,7 @@ from .corruptions import (
     SENSAUG_UNSEEN,
     SEVERITIES,
     CorruptFn,
+    ImageCorruption,
     category,
     check_backend,
     corruption_perturbation,
@@ -122,7 +123,9 @@ class Condition:
     ``perturb(images01, label, index)`` receives the clean unit batch, where ``index`` is
     how many images the pass saw before this batch (for per-image seeding). ``loader``,
     when set, replaces the run's loader for this condition (a pre-rendered corruption
-    set). It is only called if the condition actually runs.
+    set). It is only called if the condition actually runs. ``corrupt_image`` is set on
+    an on-the-fly corruption: the per-image function ``perturb`` applies, which ``run``
+    hands to its ``corrupted_loader`` instead when it has one.
     """
 
     name: str
@@ -132,6 +135,7 @@ class Condition:
     perturb: Optional[Perturb] = field(default=None, repr=False, compare=False)
     loader: Optional[Callable[[], Iterable]] = field(default=None, repr=False, compare=False)
     info: Mapping[str, Any] = field(default_factory=dict, compare=False)
+    corrupt_image: Optional[ImageCorruption] = field(default=None, repr=False, compare=False)
 
     def __post_init__(self):
         if self.kind not in KINDS:
@@ -220,7 +224,8 @@ def corruption_conditions(
     fn: Optional[CorruptFn] = None,
 ) -> list[Condition]:
     """One condition per (corruption, severity), corrupted on the fly from the run's own
-    loader (``corruptions.corruption_perturbation``). ``severities`` None means 1-5, or
+    loader: in the loader's workers when ``run`` has a ``corrupted_loader``, else in this
+    process (``corruptions.corruption_perturbation``). ``severities`` None means 1-5, or
     1-6 for combination. ``fn`` replaces ``corruptions.corrupt``. Without it, each
     corruption's backend is imported here, so a missing dependency fails before the
     first eval."""
@@ -236,6 +241,7 @@ def corruption_conditions(
                     "severity",
                     int(severity),
                     perturb=corruption_perturbation(name, int(severity), seed=seed, fn=fn),
+                    corrupt_image=ImageCorruption(name, int(severity), seed=seed, fn=fn),
                     info={
                         "category": category(name),
                         # A name, never repr(fn): a repr can hold an address, and the
@@ -333,14 +339,21 @@ def _magnitude(name, op, level, level_kind) -> float:
 class SegMetric:
     """mIoU / aAcc / mAcc in percent, accumulated over the whole pass, as mmseg's
     IoUMetric computes them. A class that appears in neither labels nor predictions has
-    IoU 0/0 and is left out of the mean (NaN), not counted as 0."""
+    IoU 0/0 and is left out of the mean (NaN), not counted as 0.
+
+    Like IoUMetric it keeps three per-class pixel counts (intersection, label, prediction),
+    not a K x K confusion matrix. Counting into K * K bins is the same arithmetic, but
+    past 1000 bins torch's CUDA bincount drops to one global atomic per pixel, and most
+    pixels land in a few bins. On ADE20K (K = 150, 22,500 bins) the K x K count took
+    738 ms per image on an A5000, against 11 ms for the forward pass; these counts take
+    3.7 ms, with the same mIoU to the last bit (checked 2026-10-15)."""
 
     primary = "mIoU"
 
     def __init__(self, num_classes: int, ignore_index: int = IGNORE_INDEX):
         self.num_classes = int(num_classes)
         self.ignore_index = ignore_index
-        self.confusion = None
+        self.counts = None  # (3, K): intersection, label, prediction
 
     def update(self, scores: Tensor, target: Tensor) -> None:
         k = self.num_classes
@@ -362,17 +375,22 @@ class SegMetric:
                 f"the target holds class ids outside [0, {k}) that are not the ignore index "
                 f"{self.ignore_index}: {sorted(target[stray].unique().tolist())[:5]}"
             )
-        pred = scores.argmax(dim=1)
-        counts = torch.bincount(target[valid] * k + pred[valid], minlength=k * k).reshape(k, k)
-        self.confusion = counts if self.confusion is None else self.confusion + counts
+        pred = scores.argmax(dim=1)[valid]
+        target = target[valid]
+        counts = torch.stack(
+            [
+                torch.bincount(target[pred == target], minlength=k),
+                torch.bincount(target, minlength=k),
+                torch.bincount(pred, minlength=k),
+            ]
+        )
+        self.counts = counts if self.counts is None else self.counts + counts
 
     def _per_class(self):
-        if self.confusion is None:
+        if self.counts is None:
             raise ValueError("no batches were scored")
-        cm = self.confusion.double().cpu().numpy()
-        intersect = np.diag(cm)
-        area_label = cm.sum(axis=1)
-        union = area_label + cm.sum(axis=0) - intersect
+        intersect, area_label, area_pred = self.counts.double().cpu().numpy()
+        union = area_label + area_pred - intersect
         with np.errstate(invalid="ignore", divide="ignore"):
             return intersect, area_label, intersect / union, intersect / area_label
 
@@ -452,8 +470,16 @@ def run(
     checkpoint: Any = None,
     meta: Optional[Mapping] = None,
     overwrite: bool = False,
+    corrupted_loader: Optional[Callable[[ImageCorruption], Iterable]] = None,
 ) -> list[dict]:
     """Evaluate every condition and return one record per condition, in order.
+
+    ``corrupted_loader(corrupt_image)``, when given, returns a loader over the same
+    images in the same order as ``loader``, with ``corrupt_image(image, position)``
+    applied to each image as it is read (a backend's ``corrupted_dataset`` under a
+    DataLoader). The on-the-fly corruptions then run in the loader's workers, alongside
+    the GPU, instead of one image at a time in this process. The pixels are the same
+    either way, so a results file can mix the two.
 
     Each new record is appended to ``results_path`` (JSONL) as soon as it is measured.
     A condition whose record is already there is skipped, but only if it was measured
@@ -491,8 +517,12 @@ def run(
                 records.append(done[key])
                 continue
             accumulator = metric()
-            source = condition.loader() if condition.loader is not None else loader
-            result = evaluate(adapter, source, accumulator, condition.perturb)
+            source, perturb = loader, condition.perturb
+            if condition.loader is not None:
+                source = condition.loader()
+            elif condition.corrupt_image is not None and corrupted_loader is not None:
+                source, perturb = corrupted_loader(condition.corrupt_image), None
+            result = evaluate(adapter, source, accumulator, perturb)
             if result["unchanged"]:
                 logger.warning(
                     "[%s] %s %s=%s left the first batch bit-identical; its score is the clean score",

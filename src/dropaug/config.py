@@ -5,7 +5,7 @@ together, and build what each group describes.
     check(cfg, training=)    cross-group checks; raises ConfigError, returns warnings
     save(cfg, work_dir)      <work_dir>/dropaug.yaml, the file probe.py / eval.py rebuild from
     load(work_dir)           ... and back, with dotted overrides on top
-    vocab_of / host_of / fade_of / selector_spec / magnitudes_of / run_name
+    vocab_of / host_of / fade_of / prune_of / selector_spec / magnitudes_of / run_name
 
 One experiment is one choice per group (``GROUPS``). What a group's keys mean is in
 its yaml files. What this module adds is the rules that span groups, checked before
@@ -21,6 +21,10 @@ anything is built, so a bad combination fails in seconds rather than hours into 
   is one of ``sa.MAGNITUDE_MODES``
 - the host's ``fade:`` block (which ops the probe fades in, ``probe.fade``) names a rule
   or ops of the vocab, and its ``at`` is in [0, 1]
+- the ``prune:`` block (``prune_of``: the static prune, ``hosts.prune``) names ops of the
+  vocab and leaves something to train on; a prune with no effect (``augment=false``)
+  is warned about, and so are ``hold_none_prob`` / ``probe`` with nothing pruned. The
+  old ``sa.pruned_augmentations`` / ``sa.hold_none_prob`` are refused: they moved there
 - the ``sa`` group (the SA loop's knobs) matters only with the sensaug host: elsewhere a
   changed value is warned about. With sensaug, the host's ``pre_train_round`` must equal
   ``sa.init_sa`` (an error: the probe rounds shift otherwise), and ``task.val_interval``
@@ -34,6 +38,7 @@ run rebuilt from its ``dropaug.yaml`` doesn't depend on the configs/ it was comp
 from, except for an mmseg task's .py file, which train.py snapshots into the run.
 """
 
+import hashlib
 import inspect
 import os
 from typing import Iterable, List, Optional, Sequence
@@ -53,6 +58,8 @@ __all__ = [
     "host_of",
     "load",
     "magnitudes_of",
+    "prune_of",
+    "prune_tag",
     "run_name",
     "save",
     "selector_spec",
@@ -173,12 +180,35 @@ def to_python(node):
 
 
 def run_name(cfg: DictConfig) -> str:
-    """``<host>_<selector>[-l<lam>]_<dataset>_<backbone>_s<seed>``, the name
-    slurm/train.sbatch gives a run directory."""
+    """``<host>_<selector>[-l<lam>]_<dataset>_<backbone>_s<seed>[_prune-...]``, the name
+    slurm/train.sbatch gives a run directory (``prune_tag`` for the suffix)."""
     selector = cfg.choices.get("selector", cfg.selector.name)
     arm = "none" if cfg.selector.get("control") else f"{selector}-l{float(cfg.selector.lam):g}"
     host = cfg.choices.get("host", cfg.host.name)
-    return f"{host}_{arm}_{cfg.dataset.name}_{cfg.task.backbone}_s{cfg.seed}"
+    return f"{host}_{arm}_{cfg.dataset.name}_{cfg.task.backbone}_s{cfg.seed}{prune_tag(cfg)}"
+
+
+def _names_hash(names: Iterable[str]) -> str:
+    """6 hex digits of sha1 over the sorted, distinct names, one per line. train.sbatch
+    computes the same: ``printf '%s\\n' ... | LC_ALL=C sort -u | sha1sum | cut -c1-6``."""
+    text = "".join(f"{name}\n" for name in sorted(set(names)))
+    return hashlib.sha1(text.encode("utf-8")).hexdigest()[:6]
+
+
+def prune_tag(cfg: DictConfig, prune=None) -> str:
+    """The run name's prune suffix: empty with nothing pruned, else ``_prune-`` and
+    ``o<N>.<hash>`` for N named ops, ``r<K>`` for K drawn (``r<K>s<seed>`` when
+    ``prune.seed`` is not the run's seed), joined by ``-``. ``hold_none_prob`` and
+    ``probe`` are not in it: a run differing only there needs a RUN_TAG."""
+    prune = prune_of(cfg) if prune is None else prune
+    if not prune:
+        return ""
+    parts = []
+    if prune.named:
+        parts.append(f"o{len(prune.named)}.{_names_hash(prune.named)}")
+    if prune.random:
+        parts.append(f"r{prune.random}" + ("" if prune.seed == int(cfg.seed) else f"s{prune.seed}"))
+    return "_prune-" + "-".join(parts)
 
 
 # --- building ---------------------------------------------------------------------------
@@ -198,23 +228,79 @@ def _takes_vocabulary(name: str) -> bool:
     return "vocabulary" in inspect.signature(HOSTS[name].__init__).parameters
 
 
-def host_kwargs(cfg: DictConfig) -> dict:
-    """``build_host`` kwargs, with the vocab passed in to the hosts that take one."""
+def host_kwargs(cfg: DictConfig, prune=None) -> dict:
+    """``build_host`` kwargs, with the vocab passed in to the hosts that take one, and
+    the static prune (``prune_of``, or ``prune`` when given) as ``pruned`` /
+    ``hold_none_prob`` when it prunes anything."""
     kwargs = to_python(cfg.host)
     kwargs.pop("vocab", None)  # the vocab is passed as `vocabulary`, never as a host key
     kwargs.pop("fade", None)  # the probe's, not the host's: see fade_of
     name = kwargs.pop("name")
     if _takes_vocabulary(name):
         kwargs["vocabulary"] = list(vocab_of(cfg))
+    prune = prune_of(cfg) if prune is None else prune
+    if prune:
+        kwargs["pruned"] = list(prune.ops)
+        kwargs["hold_none_prob"] = prune.hold_none_prob
     return {"name": name, **kwargs}
 
 
-def host_of(cfg: DictConfig):
-    """The host the config describes (checked against the vocab by ``check``)."""
+def host_of(cfg: DictConfig, prune=None):
+    """The host the config describes (checked against the vocab by ``check``), with its
+    static prune applied."""
     from hosts import build_host
 
-    kwargs = host_kwargs(cfg)
+    kwargs = host_kwargs(cfg, prune)
     return build_host(kwargs.pop("name"), **kwargs)
+
+
+#: The sa keys the prune: block replaced, and where each went.
+_MOVED_SA_KEYS = {"pruned_augmentations": "prune.ops", "hold_none_prob": "prune.hold_none_prob"}
+
+
+def prune_of(cfg: DictConfig, vocabulary: Optional[Sequence[str]] = None):
+    """The run's static prune (``hosts.Prune``) from its ``prune:`` block, on the vocab
+    (or ``vocabulary``). A pure function of the config: the random draw is seeded by
+    ``prune.seed``, so every rank and every rebuild of the run gets the same ops. Its
+    pool leaves out ``sa.REMOVE_H_NAMES`` when the sensaug host runs with
+    ``sa.remove_H``, as Sensaug's did. A config with no ``prune:`` block (saved before
+    it existed) prunes nothing. Raises ConfigError on a bad block, and on the
+    ``sa.pruned_augmentations`` / ``sa.hold_none_prob`` it replaced."""
+    from hosts import resolve_prune
+
+    sa_cfg = cfg.get("sa") or {}
+    moved = [
+        f"sa.{key} -> {target}"
+        for key, target in _MOVED_SA_KEYS.items()
+        if to_python(sa_cfg.get(key)) not in (None, [], False)
+    ]
+    if moved:
+        raise ConfigError(f"these keys moved to the prune: block (configs/train.yaml): {', '.join(moved)}")
+
+    block = to_python(cfg.get("prune")) or {}
+    unknown = sorted(set(block) - {"ops", "random", "seed", "hold_none_prob", "probe"})
+    if unknown:
+        raise ConfigError(f"prune: unknown key(s) {unknown}; expected ops, random, seed, hold_none_prob, probe")
+    exclude = ()
+    if cfg.host.get("name") == "sensaug" and sa_cfg.get("remove_H"):
+        from sa import REMOVE_H_NAMES
+
+        exclude = REMOVE_H_NAMES
+    ops = block.get("ops") or []
+    if isinstance(ops, str):
+        raise ConfigError(f"prune.ops must be a list of op names, got the string {ops!r}")
+    try:
+        return resolve_prune(
+            list(vocab_of(cfg)) if vocabulary is None else vocabulary,
+            ops=ops,
+            random=block.get("random") or 0,
+            seed=block.get("seed"),
+            exclude=exclude,
+            hold_none_prob=block.get("hold_none_prob", True),
+            probe=block.get("probe", False),
+        )
+    except (TypeError, ValueError) as error:
+        raise ConfigError(str(error)) from None
 
 
 def fade_of(cfg: DictConfig) -> tuple:
@@ -277,6 +363,15 @@ def check(cfg: DictConfig, *, training: bool) -> List[str]:
             f"scripts/eval.py --dataset {cfg.dataset.name}"
         )
 
+    # The static prune. On failure the host below is checked without it.
+    from hosts import Prune
+
+    try:
+        pruning = prune_of(cfg)
+    except (ConfigError, KeyError) as error:
+        errors.append(f"prune: {error}")
+        pruning = Prune()
+
     # The host, and its vocabulary against the vocab.
     host = None
     name = cfg.host.name
@@ -285,7 +380,7 @@ def check(cfg: DictConfig, *, training: bool) -> List[str]:
     else:
         try:
             ops = vocab_of(cfg)
-            host = host_of(cfg)
+            host = host_of(cfg, pruning)
         except (KeyError, ValueError, TypeError) as error:
             errors.append(f"host {name!r} with vocab {choices.get('vocab')!r}: {error}")
         else:
@@ -297,6 +392,27 @@ def check(cfg: DictConfig, *, training: bool) -> List[str]:
                     f"or a host that takes any vocab (sensaug, uniform)."
                 )
                 host = None
+    if host is not None and pruning:
+        implied = [n for n in host.pruned() if n not in pruning.ops]
+        if implied:
+            warnings.append(
+                f"pruning {list(pruning.ops)} on host {name!r} also prunes {implied}: every "
+                f"sub-policy that applied them applies a pruned op too"
+            )
+        if not cfg.augment:
+            warnings.append(
+                f"prune.* prunes {list(pruning.ops)}, but augment=false trains on clean images: "
+                f"the prune only keeps those ops out of the probe and the selector's prior"
+            )
+    elif not pruning:
+        block = to_python(cfg.get("prune")) or {}
+        inert = [
+            f"prune.{key}={block[key]}"
+            for key, default in (("hold_none_prob", True), ("probe", False))
+            if key in block and block[key] != default
+        ]
+        if inert:
+            warnings.append(f"{', '.join(inert)} set, but nothing is pruned: no effect")
 
     # The selector.
     spec = selector_spec(cfg)["selector"]
@@ -313,6 +429,13 @@ def check(cfg: DictConfig, *, training: bool) -> List[str]:
             build_selector(selector_name, **spec)
         except (TypeError, ValueError) as error:
             errors.append(f"selector {selector_name!r} doesn't build from {spec}: {error}")
+    if selector_name in ("cover_single", "cover_even") and name not in ("trivialaugment", "trivialaugment_diff", "sensaug"):
+        errors.append(
+            f"selector {selector_name!r} builds a per-op q that is only checked on a TrivialAugment "
+            f"host (one shared bin per image, so cover_single's q means 'apply the cover "
+            f"instead') and on sensaug (q scales each op's levels by one factor); host {name!r} "
+            f"is neither"
+        )
     if cfg.selector.get("lambda_ramp") not in ("linear", "constant"):
         errors.append(f"selector.lambda_ramp must be linear or constant, got {cfg.selector.get('lambda_ramp')!r}")
 

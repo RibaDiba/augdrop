@@ -16,8 +16,8 @@
 
 # %A_%a: array job id and task index. The body groups them into
 # slurm/logs/<job-name>/, so one submission's tasks share one directory.
-#SBATCH --output=/gammascratch/amodak/dropaug/slurm/logs/%x.%A_%a.out
-#SBATCH --error=/gammascratch/amodak/dropaug/slurm/logs/%x.%A_%a.err
+#SBATCH --output=/fs/gamma-projects/pruneaug/slurm/logs/%x.%A_%a.out
+#SBATCH --error=/fs/gamma-projects/pruneaug/slurm/logs/%x.%A_%a.err
 
 #SBATCH --mail-user=amodak@terpmail.umd.edu
 #SBATCH --mail-type=FAIL,END
@@ -36,7 +36,8 @@ set -o pipefail
 #
 # Grid (space-separated, env):
 #   BACKBONES="segformer"        configs/task backbones (pspnet, convnext, ...)
-#   HOSTS="sensaug uniform"      the DIFF32 hosts; the mmseg preprocessor can't train the others
+#   HOSTS="sensaug uniform"      the DIFF32 hosts; trivialaugment_diff also trains, the
+#                                torchvision hosts don't
 #   DATASETS="cityscapes ade20k pascal_voc12 loveda"   the default; potsdam, synapse, a2i2haze
 #                                and acdc also train (every configs/recipe pair is Sensaug's)
 #   SELECTORS="none mrmr random_k kl_reweight qpfs dpp relevance_only"   (nms, the
@@ -51,7 +52,9 @@ set -o pipefail
 #   EXTRA_SBATCH_ARGS="..."       forwarded to sbatch by --submit
 #   NAME=refactor1                --submit names the array refactor1-dropaug-matrix
 #   everything train.sbatch reads (LAM, CLUSTER, DESCENDING_MA, INV_AUG, WORK_DIR, RUN_TAG,
-#   TRAIN_ARGS, ALLOW_RESUME, EVAL, ...) passes through to every task
+#   TRAIN_ARGS, ALLOW_RESUME, EVAL, PRUNE_OPS, PRUNE_RANDOM, PRUNE_SEED, HOLD_NONE_PROB,
+#   PROBE_PRUNED, ...) passes through to every task. With PRUNE_RANDOM set and
+#   PRUNE_SEED unset, each seed of the grid draws its own prune
 #
 # --submit exports the grid it listed, so every task decodes its index against
 # the same lists. Rerunning points by hand needs the same BACKBONES/HOSTS/DATASETS/
@@ -64,7 +67,7 @@ DATASETS="${DATASETS:-cityscapes ade20k pascal_voc12 loveda}"
 SELECTORS="${SELECTORS:-none mrmr random_k kl_reweight qpfs dpp relevance_only}"
 SEEDS="${SEEDS:-0 1 2}"
 BACKBONES="${BACKBONES:-segformer}"
-REPO_DIR="${REPO_DIR:-/gammascratch/amodak/dropaug}"
+REPO_DIR="${REPO_DIR:-/fs/gamma-projects/pruneaug}"
 
 read -r -a H <<< "${HOSTS}"
 read -r -a D <<< "${DATASETS}"

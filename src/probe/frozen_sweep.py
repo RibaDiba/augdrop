@@ -45,6 +45,7 @@ import torch
 from .fade import FADE, Fade, check_fade_at
 from .finite_diff import DEFAULT_STEP
 from .grad_collect import (
+    STATIC_PRUNED,
     UNPROBED,
     FdStep,
     ModelAdapter,
@@ -144,7 +145,8 @@ class Sweep:
 
     ``grads[op]`` and ``magnitudes[op]`` hold one (B,) chunk per batch, and
     ``image_ids[k]`` holds batch k's ids. ``matrix()`` stacks them into G. An op whose
-    ``methods`` entry is ``"unprobed"`` has no magnitude, and its rows are NaN. A
+    ``methods`` entry is ``"unprobed"`` has no magnitude, and its rows are NaN, as are
+    a ``"static_pruned"`` op's (the run prunes it; its magnitudes are NaN too). A
     ``"fade"`` op's rows are d loss / d a at ``meta["fade_at"]``, and its magnitudes
     are the fade's intensity (NaN for an op with no magnitude). Every other op's rows
     (``"autograd"``, ``"tangent"``, ``"finite_diff"``) are d loss / d strength, signed
@@ -192,6 +194,10 @@ class Sweep:
     @property
     def faded(self) -> list[str]:
         return [name for name in self.names if self.methods[name] == FADE]
+
+    @property
+    def static_pruned(self) -> list[str]:
+        return [name for name in self.names if self.methods[name] == STATIC_PRUNED]
 
     def ids(self) -> list[str]:
         """G's column labels, in column order."""
@@ -246,7 +252,7 @@ class Sweep:
         summary = {}
         for name in self.names:
             chunks = self.magnitudes[name]
-            # NaN throughout for an op with no magnitude, unprobed or faded.
+            # NaN throughout for an op with no magnitude, unprobed or faded, and a pruned one.
             if chunks and np.isfinite(flat := np.concatenate(chunks)).any():
                 summary[name] = {
                     "mean": float(flat.mean()),
@@ -288,6 +294,7 @@ def sweep(
     meta: Optional[dict] = None,
     fade: Fade = None,
     fade_at: float = 1.0,
+    skip: Sequence[str] = (),
 ) -> Sweep:
     """One frozen-frame pass of ``adapter``'s model over ``probe_set``. Returns one G.
 
@@ -306,11 +313,23 @@ def sweep(
     ``fade`` selects ops to fade in instead (fade.py): a rule (``"non_differentiable"``)
     or a list of op names. Their rows are d loss / d a at ``a = fade_at``, which is
     recorded in ``meta["fade_at"]``; ``methods`` says which ops were faded.
+
+    ``skip`` lists ops the run prunes (``AugHost.prune``): they keep their place in G,
+    with NaN rows and magnitudes, and ``methods`` labels them ``"static_pruned"``.
+    Every other op's magnitudes are drawn exactly as without ``skip``.
     """
     if not ops:
         raise ValueError("no ops to probe")
     names = list(ops)
     methods = resolve_methods(ops, fade)
+    skip = set(skip)
+    unknown = sorted(skip - set(names))
+    if unknown:
+        raise ValueError(f"skip names {unknown}, which are not among the ops probed")
+    if skip and skip == set(names):
+        raise ValueError("skip names every op; there is nothing to probe")
+    for name in skip:
+        methods[name] = STATIC_PRUNED
     meta = dict(meta or {})
     if FADE in methods.values():
         meta["fade_at"] = fade_at = check_fade_at(fade_at)
@@ -343,6 +362,8 @@ def sweep(
             # Drawn before probing, so a failed batch still consumes its draw and the
             # later batches' magnitudes don't depend on which batches failed.
             drawn = _draw(magnitudes, ops, len(ids), rng)
+            for name in skip:
+                drawn[name] = np.full(len(ids), np.nan)
             if batch_ids is not None and tuple(batch_ids(batch)) != tuple(ids):
                 raise ProbeError(
                     f"batch {k} holds {list(batch_ids(batch))[:3]}..., the probe set "
@@ -393,7 +414,7 @@ def sweep(
         )
     logger.info(
         "checkpoint %s: probed %d images in %d batches (%d failed), %d ops (%d unprobed, "
-        "%d faded), magnitudes %s/%s, probe set %s",
+        "%d faded, %d pruned), magnitudes %s/%s, probe set %s",
         checkpoint,
         result.n_images,
         result.n_batches,
@@ -401,6 +422,7 @@ def sweep(
         len(names),
         len(result.unprobed),
         len(result.faded),
+        len(result.static_pruned),
         magnitudes.source,
         magnitudes.mode,
         probe_set.digest[:12],

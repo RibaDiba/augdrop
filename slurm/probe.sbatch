@@ -14,8 +14,8 @@
 #SBATCH --ntasks=4
 
 # Absolute and flat; the body groups them into slurm/logs/<job-name>/.
-#SBATCH --output=/gammascratch/amodak/dropaug/slurm/logs/%x.%j.out
-#SBATCH --error=/gammascratch/amodak/dropaug/slurm/logs/%x.%j.err
+#SBATCH --output=/fs/gamma-projects/pruneaug/slurm/logs/%x.%j.out
+#SBATCH --error=/fs/gamma-projects/pruneaug/slurm/logs/%x.%j.err
 
 #SBATCH --mail-user=amodak@terpmail.umd.edu
 #SBATCH --mail-type=FAIL,END
@@ -66,7 +66,7 @@ TARGET="${1:?${USAGE}}"
 CKPT="${CKPT:-best}"
 CLUSTER="${CLUSTER:-nexus}"
 PROBE_PY="${PROBE_PY:-scripts/probe.py}"
-REPO_DIR="${REPO_DIR:-/gammascratch/amodak/dropaug}"
+REPO_DIR="${REPO_DIR:-/fs/gamma-projects/pruneaug}"
 
 cd "${REPO_DIR}" || { echo "ERROR: REPO_DIR=${REPO_DIR} does not exist" >&2; exit 1; }
 # shellcheck disable=SC1091

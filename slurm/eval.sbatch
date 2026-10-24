@@ -15,8 +15,8 @@
 #SBATCH --ntasks=4
 
 # Absolute and flat; the body groups them into slurm/logs/<job-name>/.
-#SBATCH --output=/gammascratch/amodak/dropaug/slurm/logs/%x.%j.out
-#SBATCH --error=/gammascratch/amodak/dropaug/slurm/logs/%x.%j.err
+#SBATCH --output=/fs/gamma-projects/pruneaug/slurm/logs/%x.%j.out
+#SBATCH --error=/fs/gamma-projects/pruneaug/slurm/logs/%x.%j.err
 
 #SBATCH --mail-user=amodak@terpmail.umd.edu
 #SBATCH --mail-type=FAIL,END
@@ -53,7 +53,7 @@ set -o pipefail
 EXP_DIR="${1:?usage: sbatch slurm/eval.sbatch <exp_dir>}"
 CKPT="${CKPT:-best}"
 EVAL_PY="${EVAL_PY:-scripts/eval.py}"
-REPO_DIR="${REPO_DIR:-/gammascratch/amodak/dropaug}"
+REPO_DIR="${REPO_DIR:-/fs/gamma-projects/pruneaug}"
 
 cd "${REPO_DIR}" || { echo "ERROR: REPO_DIR=${REPO_DIR} does not exist" >&2; exit 1; }
 # shellcheck disable=SC1091

@@ -12,7 +12,10 @@ chain let such a row into ``shared_image_factor``, which then came out NaN in ev
 column and took R_scalenorm to all NaN with it. Here those rows are set aside before
 anything is computed on G, every other op is analysed as if they did not exist, and
 they come back as NaN rows and columns of R, listed in ``unprobed`` and not in
-``dropped``. On a G with no NaN row the two chains agree exactly.
+``dropped``. On a G with no NaN row the two chains agree exactly. The ops a run prunes
+for its whole length (``static_pruned=``) are set aside the same way, whether or not
+the probe measured them, and are listed in ``static_pruned`` (Sensaug's label), so the
+R a selector reads is the same either way.
 
 Four additions, none of which changes R_raw or R_scalenorm on a DIFF32 G:
 
@@ -90,6 +93,8 @@ class Analysis:
     dropped      ops measured but with no usable row in ``primary``: no variance across
                  images (Sensaug's ``dropped``), or for R_residual also no scale
     unprobed     ops with an all-NaN row in G, never measured
+    static_pruned
+                 ops the run prunes (``AugHost.prune``), set aside like unprobed ones
     aliases      ``{alias: representative}``: ops whose row of G duplicated an earlier
                  op's, analysed once under the representative's name
     diagnostics  the spectrum statistics of ``primary`` (``stats.diagnostics``)
@@ -106,6 +111,7 @@ class Analysis:
     R_scalenorm: Optional[np.ndarray] = None
     dropped: list = field(default_factory=list)
     unprobed: list = field(default_factory=list)
+    static_pruned: list = field(default_factory=list)
     aliases: dict = field(default_factory=dict)
     shared_factor_loadings: Optional[np.ndarray] = None
     bootstrap: Optional[Bootstrap] = None
@@ -159,6 +165,18 @@ class Analysis:
         return full
 
     @property
+    def ci_lo(self) -> Optional[np.ndarray]:
+        """The bootstrap CIs' lower bounds scattered back to (A, A), NaN for a cell that
+        was never tested. None when no bootstrap ran."""
+        if self.bootstrap is None:
+            return None
+        index = {name: i for i, name in enumerate(self.names)}
+        kept = [index[name] for name in self.bootstrap.names]
+        full = np.full((len(self.names), len(self.names)), np.nan)
+        full[np.ix_(kept, kept)] = self.bootstrap.ci_lo
+        return full
+
+    @property
     def n_survivors(self) -> Optional[int]:
         if self.bootstrap is None:
             return None
@@ -197,6 +215,7 @@ class Analysis:
         text = (
             f"n_images={self.n_images} n_probes={self.n_probes} "
             f"dropped={self.dropped or 'none'} unprobed={self.unprobed or 'none'} "
+            + (f"static_pruned={self.static_pruned} " if self.static_pruned else "")
             + (f"aliases={self.aliases} " if self.aliases else "")
             + f"max_shared_loading={self.max_loading:.2f} "
             f"magnitudes={self.labels.get('magnitude_source', 'unknown')}/"
@@ -230,6 +249,7 @@ def analyze(
     merge_aliases: bool = True,
     alias_rtol: float = ALIAS_RTOL,
     shrinkage: Optional[str] = None,
+    static_pruned: Sequence[str] = (),
     residual_rank: bool = False,
     d_loss: Optional[np.ndarray] = None,
     labels: Optional[dict] = None,
@@ -245,6 +265,10 @@ def analyze(
     "ledoit_wolf" or "schafer_strimmer" (``stats.shrinkage``), applied to the G the
     primary R comes from; Schafer-Strimmer shrinks toward ``closure_null(K)`` when
     normalizing, else toward 0.
+
+    ``static_pruned`` names ops the run prunes: their rows are set to NaN first (they
+    may hold real measurements, ``prune.probe``), in ``d_loss`` too, and they are
+    listed there rather than in ``unprobed``.
 
     ``residual_rank`` adds R_residual (``residual.residual_rank_corr``), which becomes
     ``primary``. It has no bootstrap and no shrinkage, so it refuses both. ``d_loss`` is
@@ -271,6 +295,17 @@ def analyze(
         d_loss = np.asarray(d_loss, dtype=np.float64)
         if d_loss.shape != d_grad.shape:
             raise ValueError(f"d_loss is {d_loss.shape}, expected G's shape {d_grad.shape}")
+    pruned = set(static_pruned)
+    unknown = sorted(pruned - set(names))
+    if unknown:
+        raise ValueError(f"static_pruned names {unknown}, which are not rows of G")
+    if pruned:
+        rows = [i for i, n in enumerate(names) if n in pruned]
+        d_grad = d_grad.copy()
+        d_grad[rows] = np.nan
+        if d_loss is not None:
+            d_loss = d_loss.copy()
+            d_loss[rows] = np.nan
 
     finite = np.isfinite(d_grad)
     unprobed_rows = ~finite.any(axis=1)
@@ -290,7 +325,8 @@ def analyze(
         n_images=int(n_images),
         n_probes=int(np.unique(probe_ids).size),
         normalize_per_image=normalize_per_image,
-        unprobed=[names[i] for i in np.flatnonzero(unprobed_rows)],
+        unprobed=[names[i] for i in np.flatnonzero(unprobed_rows) if names[i] not in pruned],
+        static_pruned=[n for n in names if n in pruned],
         aliases={names[j]: names[i] for j, i in sorted(alias_of.items())},
         labels=dict(labels or {}),
     )
@@ -372,7 +408,12 @@ def analyze(
 def analyze_sweep(sweep, **kwargs) -> Analysis:
     """``analyze`` on a ``probe.Sweep`` (duck-typed: stats does not import the probe),
     with the sweep's provenance as the labels every log record carries, and its loss
-    increase as ``d_loss`` when it has one."""
+    increase as ``d_loss`` when it has one. The ops the sweep skipped
+    (``Sweep.static_pruned``) are ``static_pruned``, with any named in
+    ``static_pruned=``."""
+    pruned = list(getattr(sweep, "static_pruned", []))
+    pruned += [n for n in kwargs.pop("static_pruned", ()) if n not in pruned]
+    kwargs["static_pruned"] = pruned
     d_grad, probe_ids = sweep.matrix()
     if "d_loss" not in kwargs and hasattr(sweep, "loss_matrix"):
         kwargs["d_loss"] = sweep.loss_matrix()

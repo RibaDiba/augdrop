@@ -44,8 +44,10 @@ Changed from Sensaug:
   itself, and the objective's KID term was the ratio of two draws of the same subset
   noise. Here KID's fake side is the batch the model was scored on (the preprocessor's
   output, hooked), converted back to the form the real features were taken in: uint8,
-  the dataloader's channel order and size. Still Sensaug's: the channel order is mmcv's
-  BGR, though Inception expects RGB, and the estimator is torchmetrics' with
+  the dataloader's channel order and size.
+- KID sees RGB (``kid_rgb``, ``sa.kid_rgb``, default true). Sensaug fed both sides in
+  mmcv's loaded BGR, though Inception expects RGB; ``sa.kid_rgb=false`` reproduces that.
+  Still Sensaug's, and open: the estimator is torchmetrics' with
   ``subset_size=4``, whose noise a check on stand-in images (not a run) found larger
   than a mild op's whole KID (``blur``, ``color_neg``). Both are open.
 - The round counter is set at the first ``run()``, from the iteration count, not in
@@ -124,7 +126,8 @@ class RobustValLoop(ValLoop):
     warmup_rounds         rounds before the first SA pdf; must equal the host's
     uniform               ``sa.generate_uniform_pdf`` instead (``--uniform``)
     weighted_augs         ``sa.generate_pdf_new_weighted_aug`` instead (``--weighted-augs``)
-    pruned_augmentations  ops kept out of the curve and every pdf for the whole run
+    pruned_augmentations  ops kept out of the curve and every pdf for the whole run (the
+                          ``prune:`` block's ops; the builder sets it to the host's)
     hold_none_prob        count those ops in P(none)'s denominator (``--hold-none-prob``)
     num_levels, tolerance the curve search's (Sensaug hard-coded 5 and 0.05)
     sa_curve_path         unused here; RobustBaselineValLoop's static curve
@@ -558,11 +561,21 @@ class SubsetTestLoop(TestLoop):
     model was scored on, the preprocessor's output (so the eval slot's op), put back in
     that form by ``_as_loaded``; see the module docstring."""
 
-    def __init__(self, runner, dataloader, evaluator, ratio: float = 0.5, fp16: bool = False) -> None:
+    def __init__(
+        self, runner, dataloader, evaluator, ratio: float = 0.5, fp16: bool = False, kid_rgb: bool = True
+    ) -> None:
         super().__init__(runner, dataloader, evaluator, fp16)
         self.ratio = ratio
+        # KID's Inception (torch-fidelity's weights) expects RGB, but both sides are in the
+        # loaded order, mmcv's BGR. kid_rgb flips both to RGB just before KID sees them;
+        # False is Sensaug's (BGR into Inception).
+        self.kid_rgb = kid_rgb
         self.kid = None
         self.update_kid()
+
+    def _kid_view(self, images: torch.Tensor) -> torch.Tensor:
+        """``images`` (uint8, B×3×H×W, the loaded order) as KID should see them."""
+        return images[:, [2, 1, 0]] if self.kid_rgb else images
 
     def update_kid(self) -> None:
         try:
@@ -584,7 +597,7 @@ class SubsetTestLoop(TestLoop):
         dataloader_iter = iter(self.dataloader)
         for _ in range(max_iter):
             data_batch = next(dataloader_iter)
-            self.kid.update(torch.stack(data_batch["inputs"], dim=0).to(get_device()), real=True)
+            self.kid.update(self._kid_view(torch.stack(data_batch["inputs"], dim=0)).to(get_device()), real=True)
         self.kid.reset()  # keeps the real features (reset_real_features=False)
 
     def run(self) -> dict:
@@ -611,7 +624,7 @@ class SubsetTestLoop(TestLoop):
                         f"KID needs the one batch the model was scored on"
                     )
                 fake = _as_loaded(dp, scored[0], data_batch["inputs"])
-                self.kid.update(fake.to(get_device()), real=False)
+                self.kid.update(self._kid_view(fake).to(get_device()), real=False)
         finally:
             handle.remove()
 

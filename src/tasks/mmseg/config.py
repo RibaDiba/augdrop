@@ -11,6 +11,9 @@ dataset) is the base, and the builder fills in everything the yaml groups own:
                and the evaluator when the dataset names one (``mmseg.val_evaluator``)
     host/      ``model.data_preprocessor`` becomes ``GpuAugSegDataPreProcessor`` with
                ``host=dict(type=<name>, **kwargs)`` and ``augment``
+    prune:     the static prune (``dropaug.config.prune_of``): the host's ``pruned`` /
+               ``hold_none_prob``, RobustValLoop's ``pruned_augmentations`` /
+               ``hold_none_prob``, and CollectGradientHook's ``probe_pruned``
     probe/ selector/
                ``custom_hooks``: ``CollectGradientHook`` (NORMAL) and
                ``ApplyWeightsHook`` (LOW), the priorities their classes carry, or
@@ -51,8 +54,9 @@ Left out of Sensaug's ``build_config``, and why:
   backbone (672-730): a dropaug task is one self-contained .py, written once per
   backbone (``configs/task/``)
 - ``--aug-type`` branches (legacy CPU transforms, AutoAugment / AugMix / VIP / IDBH,
-  ``random``, ``no_corr_sa``, geometric/photometric-only, perturbation_set, ``pruned_ops``):
-  the host and the vocab replace them (``pruned_augmentations`` still reaches the val loop)
+  ``random``, ``no_corr_sa``, geometric/photometric-only, perturbation_set): the host and
+  the vocab replace them. ``pruned_ops`` and ``pruned_augmentations`` are the ``prune:``
+  block, which reaches the host (so its warmup policy too) and the val loop
 - ``GradCorrValLoop`` and the correlation hooks' gate (``fire_iters``, ``magnitudes_path``,
   ``skip_pruned``): the sensaug host owns the round grid and the loops publish R
 - ``--adamw``, ``--freeze-early-layers``, ``--max-iters`` and the ACDC branch (ACDC is
@@ -75,7 +79,7 @@ import copy
 import os
 from typing import Any, Optional
 
-from dropaug.config import CONFIG_DIR, fade_of, host_kwargs, selector_spec, to_python
+from dropaug.config import CONFIG_DIR, fade_of, host_kwargs, prune_of, selector_spec, to_python
 
 __all__ = ["build", "localize_pretrained_checkpoint"]
 
@@ -94,8 +98,6 @@ _SA_VAL_KEYS = (
     "descending_MA",
     "remove_H",
     "weighted_augs",
-    "pruned_augmentations",
-    "hold_none_prob",
     "num_levels",
     "tolerance",
 )
@@ -207,7 +209,8 @@ def build(cfg, work_dir: str, *, launcher: str = "none", resume: bool = False):
     data_root = dataset["data_root"]
     num_workers = int(task.get("num_workers", 4))
 
-    spec = host_kwargs(cfg)
+    pruning = prune_of(cfg)
+    spec = host_kwargs(cfg, pruning)
     host_name = spec.pop("name")
     is_sa = host_name == "sensaug"
 
@@ -299,9 +302,15 @@ def build(cfg, work_dir: str, *, launcher: str = "none", resume: bool = False):
         out.val_cfg = dict(
             type="RobustValLoop",
             **{k: sa[k] for k in _SA_VAL_KEYS if k in sa},
+            pruned_augmentations=list(pruning.ops),
+            hold_none_prob=bool(pruning.hold_none_prob),
             warmup_rounds=int(host.warmup_rounds),
         )
-        out.test_cfg = dict(type="SubsetTestLoop", ratio=sa.get("test_ratio", sa.get("ratio", 0.25)))
+        out.test_cfg = dict(
+            type="SubsetTestLoop",
+            ratio=sa.get("test_ratio", sa.get("ratio", 0.25)),
+            kid_rgb=bool(sa.get("kid_rgb", True)),
+        )
     else:
         out.train_cfg.update(type="IterBasedTrainLoop", val_interval=int(task["val_interval"]))
         out.val_cfg = dict(type="ValLoop")
@@ -314,6 +323,7 @@ def build(cfg, work_dir: str, *, launcher: str = "none", resume: bool = False):
     probe = to_python(cfg.probe)
     collect = {k: probe[k] for k in _PROBE_KEYS if k in probe and probe[k] is not None}
     collect["fade"], collect["fade_at"] = fade_of(cfg)
+    collect["probe_pruned"] = bool(pruning.probe)
     analysis = probe.get("analysis") or {}
     apply_kwargs = {k: analysis[k] for k in ("mask_within_op", *_ANALYSIS_KEYS) if k in analysis}
     selector = selector_spec(cfg)

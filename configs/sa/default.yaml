@@ -9,13 +9,17 @@
 # both: 0.25, or 1.0 on ACDC (the dataset's sa_ratio)
 ratio: ${oc.select:dataset.sa_ratio,0.25}
 test_ratio: ${oc.select:dataset.sa_ratio,0.25}
+# KID's Inception expects RGB; the loaded images are mmcv's BGR. true flips both sides
+# to RGB before KID (SubsetTestLoop.kid_rgb). false is Sensaug's: BGR into Inception.
+kid_rgb: true
 descending_MA: false     # --descending-MA: the lowest-mIoU level of an op gets the most mass
 uniform: false           # --uniform: a uniform pdf instead of the SA one
 weighted_augs: false     # --weighted-augs: sa.generate_pdf_new_weighted_aug
 remove_H: false          # --no-inv-aug: drop lighter_H / darker_H
-hold_none_prob: false    # --hold-none-prob: pruned ops stay in P(none)'s denominator
-pruned_augmentations: [] # --pruned-augmentations: ops out of the curve and every pdf all run
-num_levels: 5            # SA-curve search: levels per op (hard-coded in Sensaug)
+# --pruned-augmentations and --hold-none-prob are the top-level prune: block
+# (configs/train.yaml): prune.ops / prune.random reach the loop as its
+# pruned_augmentations, and prune.hold_none_prob as its hold_none_prob.
+num_levels: 5           # SA-curve search: levels per op (hard-coded in Sensaug)
 tolerance: 0.05          # SA-curve search tolerance (hard-coded in Sensaug)
 sa_curve_path: null      # a static curve {op: [levels]}, used by RobustBaselineValLoop only
                          # (Sensaug passed sensaug/testing/test_levels_voc.json, which its

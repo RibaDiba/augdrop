@@ -29,6 +29,15 @@ order, and the positional ``overrides`` come after them, so they win:
     --no-inv-aug            sa.remove_H=true   (Sensaug's flag: lighter_H / darker_H stay
                             out of the SA curve and every pdf; still probed, and still in
                             the warmup policy, as in Sensaug)
+    --pruned-augmentations OP [OP ...]
+                            prune.ops=[OP,...]  (Sensaug's flag: ops out of training for
+                            the whole run, on any host; see configs/train.yaml's prune:)
+    --random-prune-count N  prune.random=N      (Sensaug's `null` arm: N more ops drawn at
+                            random before training)
+    --random-prune-seed S   prune.seed=S        (default: the run's seed)
+    --no-hold-none-prob     prune.hold_none_prob=false  (Sensaug's default: P(none) rises
+                            as ops are pruned)
+    --probe-pruned          prune.probe=true    (the probe still measures the pruned ops)
 
 Both ``--flag value`` and ``--flag=value`` work.
 
@@ -46,6 +55,10 @@ the config, else ``<cluster.work_root>/<run_name>``. Rules:
   ``--dry-run``.
 - Only rank 0 (env RANK absent or 0) writes: dropaug.yaml, a copy of the task's mmengine
   .py, and ``mmseg_config.py`` (the built config). Other ranks write nothing.
+- With a static prune, rank 0 also writes ``<run>/prune.json`` (``hosts.Prune.record``:
+  the named ops, the pool, the seed, the draw, what is kept). An existing one that
+  disagrees with the config's prune exits 2, so a resume can't silently prune
+  different ops.
 - ``--dry-run`` stops after that, printing a summary; it needs no mmengine. A cls task
   (no cls training loop yet) exits 2 after the dry-run stage. A config error (ConfigError,
   an unknown group option, a bad override) exits 2 with the message on stderr.
@@ -58,11 +71,11 @@ Sensaug's train.py flags that are not flags here, and what replaces each:
     --aug-type                    host=<sensaug|uniform|randaugment|...>; augment=false trains clean
     --random-aug                  host=uniform
     --no-corr-sa                  host=uniform with a selector (no SA loop)
-    --uniform / --weighted-augs / --hold-none-prob
-                                  sa.uniform / sa.weighted_augs / sa.hold_none_prob
-    --pruned-augmentations        sa.pruned_augmentations=[op,...]
-    --random-prune-count/-method/-seed
-                                  selector=random_k selector.<key>=..., or sa.pruned_augmentations
+    --uniform / --weighted-augs   sa.uniform / sa.weighted_augs
+    --hold-none-prob              the default (prune.hold_none_prob=true); --no-hold-none-prob
+                                  is Sensaug's default
+    --random-prune-method         prune.random > 0 is the `null` arm; selector=random_k is a
+                                  different null, redrawn from R at every probe
     --geometric-only / --photometric-only
                                   a vocab config (vocab=<name>); not ported
     --corr-lambda / --corr-lambda-ramp
@@ -133,6 +146,21 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="sa.remove_H=true (sensaug host): lighter_H / darker_H stay out of the SA curve and the pdf",
     )
+    p.add_argument(
+        "--pruned-augmentations",
+        nargs="+",
+        metavar="OP",
+        help="prune.ops=[OP,...]: ops out of training for the whole run, on any host",
+    )
+    p.add_argument("--random-prune-count", type=int, metavar="N", help="prune.random=N: N more ops drawn at random before training")
+    p.add_argument("--random-prune-seed", type=int, metavar="S", help="prune.seed=S: the random draw's seed (default the run's seed)")
+    p.add_argument(
+        "--no-hold-none-prob",
+        dest="no_hold_none_prob",
+        action="store_true",
+        help="prune.hold_none_prob=false: P(no augmentation) rises as ops are pruned (Sensaug's default)",
+    )
+    p.add_argument("--probe-pruned", action="store_true", help="prune.probe=true: the probe still measures the pruned ops")
     p.add_argument("--dry-run", action="store_true", help="compose, check and write dropaug.yaml, then exit")
     p.add_argument("overrides", nargs="*", help="Hydra overrides, applied after the flags")
     return p
@@ -188,6 +216,19 @@ def flag_overrides(args, config_dir: str):
         out.append("sa.init_sa=true")
     if args.no_inv_aug:
         out.append("sa.remove_H=true")
+    if args.pruned_augmentations:
+        bad = [op for op in args.pruned_augmentations if not op or any(c in op for c in "'\\,[] ")]
+        if bad:
+            _fail(f"--pruned-augmentations: {bad} are not op names")
+        out.append("prune.ops=[" + ",".join(f"'{op}'" for op in args.pruned_augmentations) + "]")
+    if args.random_prune_count is not None:
+        out.append(f"prune.random={args.random_prune_count}")
+    if args.random_prune_seed is not None:
+        out.append(f"prune.seed={args.random_prune_seed}")
+    if args.no_hold_none_prob:
+        out.append("prune.hold_none_prob=false")
+    if args.probe_pruned:
+        out.append("prune.probe=true")
     return out
 
 
@@ -239,6 +280,48 @@ def resolve_work_dir(cfg, args) -> str:
     return os.path.abspath(path)
 
 
+def prune_record(cfg):
+    """``prune.json``'s contents for the run's static prune, or None with nothing pruned."""
+    from dropaug.config import host_of, prune_of, vocab_of
+    from dropaug.io.hashing import vocab_hash
+
+    pruning = prune_of(cfg)
+    if not pruning:
+        return None
+    vocab = vocab_of(cfg)
+    # `kept` follows what the host realizes (autoaugment prunes ops by implication), `pruned` the config.
+    realized = host_of(cfg, pruning).pruned()
+    return pruning.record(list(vocab), realized, host=str(cfg.host.name), vocab_hash=vocab_hash(vocab))
+
+
+def write_prune_record(cfg, work_dir) -> None:
+    """Write ``<run>/prune.json``, or refuse (exit 2) when one is there and records a
+    different prune. ``vocab_hash`` is provenance only: an op's definition can change
+    without changing the draw."""
+    import json
+
+    from hosts import PRUNE_FILE
+
+    path = os.path.join(work_dir, PRUNE_FILE)
+    record = prune_record(cfg)
+    if os.path.exists(path):
+        with open(path) as f:
+            saved = json.load(f)
+        same = lambda r: {k: v for k, v in (r or {}).items() if k != "vocab_hash"}  # noqa: E731
+        if same(saved) != same(record):
+            _fail(
+                f"{path} records the prune {saved.get('pruned')}, but this config prunes "
+                f"{None if record is None else record['pruned']}. Use a new --work-dir."
+            )
+        return
+    if record is not None:
+        os.makedirs(work_dir, exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(record, f, indent=2)
+        os.replace(tmp, path)
+
+
 def prepare(args):
     """Compose, check and (rank 0) write the run directory. Returns (cfg, work_dir)."""
     from omegaconf import OmegaConf
@@ -276,6 +359,7 @@ def prepare(args):
             print(f"train.py: warning: {w}", file=sys.stderr)
         if not os.path.exists(run_file):
             save(cfg, work_dir)
+        write_prune_record(cfg, work_dir)
         task_py = cfg.task.get("config")
         if task_py:
             src = os.path.join(CONFIG_DIR, "task", task_py)
@@ -285,8 +369,16 @@ def prepare(args):
 
 
 def summary(cfg, work_dir) -> str:
-    from dropaug.config import run_name
+    from dropaug.config import prune_of, run_name
 
+    pruning = prune_of(cfg)
+    lines = [] if not pruning else [
+        f"prune     {list(pruning.ops)}"
+        + (f" (named {list(pruning.named)})" if pruning.named and pruning.drawn else "")
+        + (f" (drew {pruning.random} of {len(pruning.pool)} at seed {pruning.seed})" if pruning.random else "")
+        + f", P(none) {'held' if pruning.hold_none_prob else 'renormalized'}"
+        + (", still probed" if pruning.probe else ", not probed")
+    ]
     return "\n".join(
         [
             f"run dir   {work_dir}",
@@ -297,6 +389,7 @@ def summary(cfg, work_dir) -> str:
             f"selector  {cfg.choices.get('selector', cfg.selector.name)} (lam {float(cfg.selector.lam):g}"
             + (", control)" if cfg.selector.get("control") else ")"),
             f"seed      {cfg.seed}  launcher {cfg.launcher}  resume {bool(cfg.resume)}  augment {bool(cfg.augment)}",
+            *lines,
         ]
     )
 
@@ -308,7 +401,11 @@ def train_mmseg(cfg, work_dir, args):
     if _rank() == 0:
         mm_cfg.dump(os.path.join(work_dir, "mmseg_config.py"))
     from mmengine.runner import Runner
+    from mmengine.utils import import_modules_from_strings
 
+    # custom_imports only runs when mmengine parses a config file; this one is built in
+    # memory, so register GpuAugSegDataPreProcessor, the loops and hooks by hand.
+    import_modules_from_strings(**mm_cfg.custom_imports)
     runner = Runner.from_cfg(mm_cfg)
     runner.val_loop  # Sensaug's: build the loops now, so a bad loop config fails at start-up
     runner.test_loop

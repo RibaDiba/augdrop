@@ -23,17 +23,22 @@ with the cls loop):
   ``host.sampling_probs()`` with ``host.none_prob`` for "none", level uniform on
   [0, 1], as ``RandomAlphaTrainTransform`` did
 
-Both are Sensaug's DIFF32 ops in their unsigned [0, 1] units, and those are the only
-ops this trains on. The torchvision methods (RandAugment, TrivialAugment, AutoAugment)
-are refused until they have differentiable ops of their own. ``augment=False`` builds
-the host (so the hooks can probe) and leaves training clean: Sensaug's control arm.
+- a ``trivialaugment_diff`` host: TrivialAugmentWide's policy (one op, one uniform
+  bin) over vocab's ``trivialaug_diff``, at the bin's magnitude in the op's units
+
+The torchvision methods (RandAugment, TrivialAugment, AutoAugment) are refused
+(``check_trainable``) until they have training-time ops of their own.
+``augment=False`` builds the host (so the hooks can probe) and leaves training clean:
+Sensaug's control arm.
 
 The eval slot is Sensaug's ``set_eval_spec``: ``set_eval(op, level)`` applies one op at
 one level to every image on the ``training=False`` path, labels moving with the
 geometric ops, until ``set_eval_none()``. Only the SA loop (``loops.py``) sets it. It is
 independent of ``augment``, so the control arm's SA still measures.
 
-Not ported: ``pruned_ops``. Exclude an op through the host's vocabulary or a zero in q.
+Sensaug's ``pruned_ops`` is the host's static prune (``host=dict(..., pruned=[...])``,
+``AugHost.prune``, from the ``prune:`` config block): a pruned op has probability 0 in
+every draw, the warmup policy's included.
 """
 
 import contextlib

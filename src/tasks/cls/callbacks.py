@@ -81,6 +81,8 @@ class CollectGradientCallback:
     fade         the ops faded in instead (``probe.fade``): None, ``"non_differentiable"``
                  or a list of op names
     fade_at      the ``a`` a faded op's row is taken at (1 = the augmented image)
+    probe_pruned also measure the ops the host prunes (``host.pruned()``); False leaves
+                 them out with NaN rows labelled ``static_pruned`` (as in the mmseg hook)
     """
 
     def __init__(
@@ -96,6 +98,7 @@ class CollectGradientCallback:
         magnitude_mode: str = sa.MODE_MODAL,
         fade=None,
         fade_at: float = 1.0,
+        probe_pruned: bool = False,
     ):
         if isinstance(magnitude, Mapping):
             fallback = probe.Magnitudes.fixed(dict(magnitude))
@@ -111,6 +114,7 @@ class CollectGradientCallback:
         fallback.draw(self.ops, 1, np.random.default_rng(0))
         self.magnitudes.draw(self.ops, 1, np.random.default_rng(0))
         self.faded = probe.faded_ops(self.ops, fade)
+        self.skip = () if probe_pruned else host.pruned()
         self.n_probe = n_probe
         self.probe_seed = probe_seed
         self.batch_size = batch_size
@@ -141,10 +145,12 @@ class CollectGradientCallback:
                 self.max_iters,
             )
         logger.info(
-            "[probe] %d ops (%d faded at a=%g), probe set %s (%d images of %s), magnitudes %s/%s",
+            "[probe] %d ops (%d faded at a=%g, %d pruned and not measured), probe set %s (%d images of %s), "
+            "magnitudes %s/%s",
             len(self.ops),
             len(self.faded),
             self.fade_at,
+            len(self.skip),
             self.probe_set.digest[:12],
             len(self.probe_set),
             self.data.source,
@@ -173,6 +179,7 @@ class CollectGradientCallback:
             meta={"iter": iteration, "role": role},
             fade=self.fade,
             fade_at=self.fade_at,
+            skip=self.skip,
         )
 
 
@@ -227,7 +234,7 @@ class ApplyWeightsCallback:
         if sweep is None or sweep.meta.get("iter") != iteration:
             return None
         role = sweep.meta["role"]
-        analysis = stats.analyze_sweep(sweep, **self.analysis_kwargs)
+        analysis = stats.analyze_sweep(sweep, static_pruned=self.host.pruned(), **self.analysis_kwargs)
         if _main():
             stats.write_analysis(self.work_dir, analysis)
             logger.info("[grad-corr] iter %d (%s): %s", iteration, role, analysis.summary())
@@ -268,6 +275,7 @@ class ApplyWeightsCallback:
                 reason=reason,
                 q=dict(zip(self.host.vocabulary(), np.asarray(q).tolist())) if applied else None,
                 pruned=list(selected.pruned) if applied else [],
+                covers=[list(pair) for pair in selected.covers] if applied else [],
             ),
         )
         if applied:
@@ -279,7 +287,8 @@ class ApplyWeightsCallback:
                 self.lam,
                 self.lambda_ramp,
                 selected.spread,
-                f", pruned {list(selected.pruned)}" if selected.pruned else "",
+                (f", pruned {list(selected.pruned)}" if selected.pruned else "")
+                + (f", covers {dict(selected.covers)}" if selected.covers else ""),
             )
         else:
             # Never silently: a q that quietly did nothing looks like a real arm.

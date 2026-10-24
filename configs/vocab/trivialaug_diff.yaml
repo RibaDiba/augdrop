@@ -1,0 +1,6 @@
+# TrivialAugmentWide's 13 ops at its wide ranges, differentiable (vocab/families/
+# trivialaug_diff.py): the 9 signed ops split into _pos/_neg (22 ops). Posterize,
+# Solarize, AutoContrast and Equalize are torchvision's own. Identity is the host's
+# no-op draw.
+families: [trivialaug_diff]
+exclude: []

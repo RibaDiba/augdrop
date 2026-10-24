@@ -23,11 +23,14 @@ EXPECTED_METHOD = {
     "pil_autoaug": AUTOGRAD,
     "randaug_default": FINITE_DIFF,
     "trivialaug_wide": FINITE_DIFF,
+    "trivialaug_diff": AUTOGRAD,
     "autoaugment": UNPROBED,
 }
 MAGNITUDE_FREE = {"Identity", "AutoContrast", "Equalize", "Invert"}
 # torchvision's enhance ops carry an exact tangent.
 ENHANCE = {"Brightness", "Color", "Contrast", "Sharpness"}
+# trivialaug_diff keeps these as torchvision's own ops: no tangent, finite differences.
+EXACT_STEPPED = {"Posterize", "Solarize"}
 
 
 def test_audit_and_probe_agree_on_the_strongest_magnitude():
@@ -42,6 +45,8 @@ def test_every_op_is_measured_the_way_its_spec_says():
         expected = EXPECTED_METHOD[spec.family]
         if base in MAGNITUDE_FREE:
             expected = UNPROBED
+        elif spec.family == "trivialaug_diff" and base in EXACT_STEPPED:
+            expected = FINITE_DIFF
         elif expected == FINITE_DIFF and base in ENHANCE:
             expected = TANGENT
         assert op_method(spec) == expected, name

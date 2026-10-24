@@ -11,7 +11,7 @@
 
 # Must match the directory in every #SBATCH --output/--error line. SLURM opens those
 # files before the script body runs, so they cannot be templated from REPO_DIR.
-LOG_BASE="${LOG_BASE:-/gammascratch/amodak/dropaug/slurm/logs}"
+LOG_BASE="${LOG_BASE:-/fs/gamma-projects/pruneaug/slurm/logs}"
 
 # Move this job's bootstrap .out/.err (flat in LOG_BASE) into LOG_BASE/<job-name>/.
 # A same-filesystem rename keeps the fd SLURM already opened writing to the same

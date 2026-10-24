@@ -22,6 +22,13 @@ ops plus "none", with the magnitude uniform on [0, 1]. ``pdf()`` returns None th
 and ``set_weights`` raises, because Sensaug never reweights the warmup policy.
 The one probe that fires during warmup is the control, whose R must not reach
 the pdf anyway.
+
+A static prune (``AugHost.prune``) applies to the warmup policy as to any host's base,
+as Sensaug's ``GpuAugSegDataPreProcessor(pruned_ops=)`` kept them out of its warmup
+bank. After warmup the SA loop leaves them out of the curve and every pdf (its
+``pruned_augmentations``), and ``set_sa_pdf`` refuses a pdf that gives one mass. The
+pdf's P(none) is the pdf generator's (``sa.none_prob_denominator``), which reads the
+same ``hold_none_prob``.
 """
 
 import math
@@ -242,6 +249,11 @@ class SensAugHost(AugHost):
             op = key[0]
             if op not in index:
                 raise KeyError(f"pdf op {op!r} is not in this host's vocabulary")
+            if value > 0 and op in self._pruned:
+                raise ValueError(
+                    f"pdf gives mass to {op!r}, which this run prunes; the SA loop's "
+                    f"pruned_augmentations must be the host's pruned()"
+                )
             mass[index[op]] += value
         total = none + float(mass.sum())
         if abs(total - 1.0) > _PDF_SUM_TOL:
