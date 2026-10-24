@@ -25,9 +25,13 @@ with the cls loop):
 
 - a ``trivialaugment_diff`` host: TrivialAugmentWide's policy (one op, one uniform
   bin) over vocab's ``trivialaug_diff``, at the bin's magnitude in the op's units
+- a ``randaugment_diff`` host: RandAugment's published (N, M) over ``randaug_diff``,
+  N draws per image applied in turn
+- an ``augmix_diff`` host: AugMix as Sensaug ran it over ``augmix_diff``, chains mixed
+  with the clean image, the mask left as it was (Sensaug's behaviour)
 
 The torchvision methods (RandAugment, TrivialAugment, AutoAugment) are refused
-(``check_trainable``) until they have training-time ops of their own.
+(``check_trainable``): they train through those ``*_diff`` hosts.
 ``augment=False`` builds the host (so the hooks can probe) and leaves training clean:
 Sensaug's control arm.
 
@@ -51,9 +55,9 @@ from mmseg.registry import MODELS
 from hosts import build_host
 from vocab import get_op
 
-from ..augment import NO_OP, apply_draws, check_trainable, sample_draws
+from ..augment import NO_OP, apply_draws, augment_batch, check_trainable, sample_draws
 
-__all__ = ["GpuAugSegDataPreProcessor", "NO_OP", "apply_draws", "sample_draws"]
+__all__ = ["GpuAugSegDataPreProcessor", "NO_OP", "apply_draws", "augment_batch", "sample_draws"]
 
 
 @MODELS.register_module()
@@ -106,7 +110,7 @@ class GpuAugSegDataPreProcessor(SegDataPreProcessor):
         if training:
             if not self.augment:
                 return data
-            draws = sample_draws(self.host, int(inputs.shape[0]))
+            draws = None  # the host's whole policy: augment_batch
         else:
             if self._eval_spec is None or self._eval_spec[0] == NO_OP:
                 return data
@@ -121,7 +125,10 @@ class GpuAugSegDataPreProcessor(SegDataPreProcessor):
         with torch.no_grad():
             rgb01 = ((inputs * std + mean) / 255.0).clamp(0.0, 1.0)
             labels = _gather_labels(samples)
-            rgb01, labels = apply_draws(rgb01, labels, draws, self.ops)
+            if draws is None:
+                rgb01, labels = augment_batch(self.host, rgb01, labels, self.ops)
+            else:
+                rgb01, labels = apply_draws(rgb01, labels, draws, self.ops)
             data["inputs"] = (rgb01 * 255.0 - mean) / std
 
         if labels is not None:

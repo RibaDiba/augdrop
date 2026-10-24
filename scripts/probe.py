@@ -27,14 +27,17 @@ can be switched (``vocab=randaug_default`` with ``--method uniform``); ``check``
 a combination that doesn't fit.
 
 The checkpoint mode. ``--method`` is a ``configs/host`` option (sensaug, randaugment,
-trivialaugment, autoaugment, uniform). It is the probe's choice and need not be how the
+trivialaugment, autoaugment, uniform, or a ``*_diff`` host: trivialaugment_diff,
+randaugment_diff, augmix_diff). It is the probe's choice and need not be how the
 model was trained: a Sensaug ``none`` or ``augmix`` model is probed with whichever
 method's ops are named. The method's host config gives:
 
 - the ops, its whole vocab: sensaug and uniform the 32 DIFF32 ops, randaugment and
-  trivialaugment 13 each, autoaugment 10 (R is over all of them)
+  trivialaugment 13 each, autoaugment 10, the ``*_diff`` hosts 22 each (R is over all of
+  them)
 - the magnitude, its own (``tasks.magnitudes``): RandAugment's bin M, TrivialAugment's
-  uniform bin per image, AutoAugment's policy bins; sensaug the SA snapshot (below);
+  uniform bin per image, AutoAugment's policy bins, randaugment_diff its published level
+  for ``--dataset``, AugMix a bin uniform on its first 3; sensaug the SA snapshot (below);
   uniform, and every method under ``--magnitude-mode fixed``, ``probe.magnitude``
 - the fade, its ``fade:`` block: randaugment's and autoaugment's ops are all faded in,
   trivialaugment's only where there is no derivative (its enhance ops go through their

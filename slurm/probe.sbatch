@@ -3,13 +3,13 @@
 #SBATCH --job-name=dropaug-probe
 #SBATCH --nodes=1
 
-## GAMMA, 1 GPU. The walltime is a guess: one forward+backward per op per image,
+## GAMMA, 1 GPU (a job under the cap, slurm/gate.sh: submit with slurm/submit.sh). The walltime is a guess: one forward+backward per op per image,
 ## two forwards per op for the finite-difference ones, over the whole val set.
 #SBATCH --time=08:00:00
 #SBATCH --qos=default
 #SBATCH --account=gamma
 #SBATCH --partition=gamma
-#SBATCH --gres=gpu:1
+#SBATCH --gres=gpu:rtxa6000:1
 #SBATCH --mem=32gb
 #SBATCH --ntasks=4
 
@@ -32,7 +32,7 @@ set -o pipefail
 # The first form rebuilds a dropaug run from <exp_dir>/dropaug.yaml and probes its own
 # host's ops. The second probes any mmseg checkpoint (a Sensaug experiment of any
 # --aug-type, say) with <method>'s ops, magnitudes and fade (a configs/host option:
-# sensaug, randaugment, trivialaugment, autoaugment, uniform), on the model the
+# sensaug, randaugment, trivialaugment, autoaugment, uniform, *_diff), on the model the
 # <backbone> task + recipe builds for <dataset>. See scripts/probe.py.
 #
 # One GPU, plain python: the probe's DDP sharding is not ported.
@@ -72,6 +72,7 @@ cd "${REPO_DIR}" || { echo "ERROR: REPO_DIR=${REPO_DIR} does not exist" >&2; exi
 # shellcheck disable=SC1091
 source "${REPO_DIR}/slurm/common.sh"
 group_logs dropaug-probe
+gate_check_running || exit 1
 
 [ -f "${PROBE_PY}" ] || { echo "ERROR: no ${PROBE_PY} under ${REPO_DIR}" >&2; exit 1; }
 if [ -d "${TARGET}" ]; then
