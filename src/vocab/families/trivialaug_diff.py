@@ -44,7 +44,7 @@ from torchvision.transforms.v2 import functional as TF
 from ..diff_ops import _as_delta, _batch_delta, _broadcast_delta, _warp, warp_image_and_label
 from ..op import OpSpec
 from . import trivialaug_wide
-from .randaug_default import ENHANCE_IDS, OP_ORDER
+from .randaug_default import AA_IMAGE_SIZE, ENHANCE_IDS, OP_ORDER
 
 FAMILY = "trivialaug_diff"
 SOURCE = "torchvision TrivialAugmentWide (Müller & Hutter, 2021), differentiable in torch"
@@ -131,11 +131,23 @@ def _geometric_matrix(transform_id: str) -> Callable[[Tensor, Tensor], Tensor]:
     raise ValueError(f"{transform_id} is not a geometric op")
 
 
-def geometric_op(transform_id: str, sign: float):
+#: The image axis a translate moves along (width for X, height for Y).
+_TRANSLATE_AXIS = {"TranslateX": -1, "TranslateY": -2}
+
+
+def geometric_op(transform_id: str, sign: float, translate_ref: Optional[float] = None):
+    """``translate_ref`` sets a translate's units: None, pixels (TrivialAugment's
+    absolute range); otherwise the image extent the range is stated for, scaled to the
+    image's own extent as torchvision does (RandAugment's 331, AugMix's 1, a fraction of
+    the image)."""
     matrix_fn = _geometric_matrix(transform_id)
+    axis = None if translate_ref is None else _TRANSLATE_AXIS.get(transform_id)
 
     def fn(images: Tensor, magnitude, label: Optional[Tensor] = None):
-        matrix = matrix_fn(images, sign * _batch_delta(magnitude, images))
+        m = sign * _batch_delta(magnitude, images)
+        if axis is not None:
+            m = m * (images.shape[axis] / translate_ref)
+        matrix = matrix_fn(images, m)
         if label is None:
             return _warp(images, matrix), None
         return warp_image_and_label(images, label, matrix)
@@ -168,50 +180,42 @@ def enhance_op(transform_id: str, sign: float):
     return fn
 
 
-# --- the family -------------------------------------------------------------------
+# --- a split family -----------------------------------------------------------------
+#
+# Shared with `randaug_diff` and `augmix_diff`, which build RandAugment's and AugMix's
+# ops the same way at their own ranges.
 
 
-def _split_specs(transform_id: str):
+def split_specs(family: str, source: str, transform_id: str, hi: float, translate_ref: Optional[float] = None):
+    """``<transform_id>_pos`` and ``_neg``: unsigned magnitude in [0, hi], identity at 0."""
     geometric = transform_id in GEOMETRIC_IDS
     for direction, sign in DIRECTIONS:
         yield OpSpec(
-            name=f"{FAMILY}.{transform_id}_{direction}",
-            family=FAMILY,
+            name=f"{family}.{transform_id}_{direction}",
+            family=family,
             kind="geometric" if geometric else "photometric",
-            source=SOURCE,
-            mag_range=(0.0, SPLIT_RANGES[transform_id]),
+            source=source,
+            mag_range=(0.0, hi),
             identity_at=0.0,
             grad_mode="autograd",
             warps_label=geometric,
-            fn=geometric_op(transform_id, sign) if geometric else enhance_op(transform_id, sign),
+            fn=geometric_op(transform_id, sign, translate_ref) if geometric else enhance_op(transform_id, sign),
         )
 
 
-def _exact_spec(transform_id: str) -> OpSpec:
-    """trivialaug_wide's op (torchvision's own) under this family's name."""
-    spec = next(s for s in trivialaug_wide.OPS if s.name == f"{trivialaug_wide.FAMILY}.{transform_id}")
-    return dataclasses.replace(spec, name=f"{FAMILY}.{transform_id}", family=FAMILY)
-
-
-def _build_ops() -> Tuple[OpSpec, ...]:
-    specs = []
-    for transform_id in OP_ORDER:
-        if transform_id == "Identity":
-            continue
-        if transform_id in EXACT_IDS:
-            specs.append(_exact_spec(transform_id))
-        else:
-            specs.extend(_split_specs(transform_id))
-    return tuple(specs)
-
-
-def _split_table(transform_id: str, hi: float):
-    magnitudes_fn, _ = TrivialAugmentWide._AUGMENTATION_SPACE[transform_id]
-    name = f"{FAMILY}.{transform_id}"
+def split_table(family: str, method_cls, transform_id: str, hi: float, translate_ref: Optional[float] = None):
+    """The bins ``method_cls`` draws ``transform_id``'s magnitude from, read off its
+    ``_AUGMENTATION_SPACE``, unsigned and in the split op's units (``translate_ref`` as
+    in ``geometric_op``). The table is evaluated on a 331x331 image; a relative
+    translate comes back in units of ``translate_ref``. torchvision's float32 can
+    overshoot ``hi`` by round-off, which is clipped; more raises."""
+    magnitudes_fn, _ = method_cls._AUGMENTATION_SPACE[transform_id]
+    name = f"{family}.{transform_id}"
+    size = AA_IMAGE_SIZE
+    scale = 1.0 if translate_ref is None or transform_id not in _TRANSLATE_AXIS else translate_ref / size
 
     def table(num_bins):
-        # Translate is absolute in TrivialAugmentWide, so the image size is unused.
-        values = [abs(float(v)) for v in magnitudes_fn(num_bins, 331, 331)]
+        values = [abs(float(v)) * scale for v in magnitudes_fn(num_bins, int(size), int(size))]
         outside = [v for v in values if v > hi * (1 + 1e-6)]
         if outside:
             raise ValueError(f"{name}: torchvision's bins {outside} are outside [0, {hi}]")
@@ -220,21 +224,50 @@ def _split_table(transform_id: str, hi: float):
     return table
 
 
-def _build_bins() -> Dict[str, Callable]:
-    tables = {}
-    for spec in OPS:
-        base = spec.name.split(".", 1)[1]
-        if base in EXACT_IDS:
-            if spec.has_magnitude:
-                tables[spec.name] = trivialaug_wide.BINS[f"{trivialaug_wide.FAMILY}.{base}"]
+def build_split_family(
+    family: str,
+    source: str,
+    method_cls,
+    split_ranges: Dict[str, float],
+    exact: Dict[str, Tuple[OpSpec, Optional[Callable]]],
+    translate_ref: Optional[float] = None,
+) -> Tuple[Tuple[OpSpec, ...], Dict[str, Callable]]:
+    """``(OPS, BINS)`` of a split family over RandAugment's 13 ops (``OP_ORDER`` minus
+    Identity): each op in ``split_ranges`` (transform id -> ``hi``) as a ``_pos`` /
+    ``_neg`` pair with ``method_cls``'s bins, and each op in ``exact`` (transform id ->
+    ``(torchvision's OpSpec, its BinTable or None)``) as that op under this family's
+    name."""
+    if set(split_ranges) | set(exact) != set(OP_ORDER) - {"Identity"} or set(split_ranges) & set(exact):
+        raise ValueError(f"{family}: split {sorted(split_ranges)} and exact {sorted(exact)} must partition the ops")
+    specs, tables = [], {}
+    for transform_id in OP_ORDER:
+        if transform_id == "Identity":
             continue
-        transform_id = base.rsplit("_", 1)[0]
-        tables[spec.name] = _split_table(transform_id, SPLIT_RANGES[transform_id])
-    return tables
+        if transform_id in exact:
+            spec, table = exact[transform_id]
+            spec = dataclasses.replace(spec, name=f"{family}.{transform_id}", family=family)
+            specs.append(spec)
+            if table is not None:
+                tables[spec.name] = table
+            continue
+        hi = split_ranges[transform_id]
+        table = split_table(family, method_cls, transform_id, hi, translate_ref)
+        for spec in split_specs(family, source, transform_id, hi, translate_ref):
+            specs.append(spec)
+            tables[spec.name] = table
+    return tuple(specs), tables
 
 
-assert set(SPLIT_RANGES) | set(EXACT_IDS) == set(OP_ORDER) - {"Identity"}
+def _exact(transform_id: str):
+    """trivialaug_wide's op (torchvision's own) and its bins."""
+    name = f"{trivialaug_wide.FAMILY}.{transform_id}"
+    spec = next(s for s in trivialaug_wide.OPS if s.name == name)
+    return spec, trivialaug_wide.BINS.get(name)
+
+
 assert ENHANCE_IDS <= set(SPLIT_RANGES)
 
-OPS = _build_ops()
-BINS = _build_bins()
+# Translate is absolute in TrivialAugmentWide (translate_ref None).
+OPS, BINS = build_split_family(
+    FAMILY, SOURCE, TrivialAugmentWide, SPLIT_RANGES, {t: _exact(t) for t in EXACT_IDS}
+)
