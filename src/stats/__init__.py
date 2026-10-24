@@ -18,6 +18,9 @@ naming.
                    squared / abs / signed
     diagnostics.py diagnose(R): effective rank, participation ratio, condition
                    number, VIF, and the Marchenko-Pastur reference
+    residual.py    residual_rank_corr: R with the shared factor regressed out per op
+                   (leave-one-out), then Spearman; null_max_bound, its chance ceiling.
+                   New: the NMS arm's R
     analyze.py     analyze / analyze_sweep: Sensaug's ``_emit`` chain on one G ->
                    an ``Analysis`` (R_raw, R_scalenorm, loadings, bootstrap, survivors)
     logs.py        corr_matrix_log.json / corr_bootstrap_log.txt /
@@ -36,8 +39,8 @@ naming.
     q, survives = fdr_correct(p)                      # (K, K): scatter back to (A, A)
 
 with these additions: all-NaN (unprobed) rows and exact aliases are set aside first,
-``shrinkage=`` optionally shrinks the primary R, and every R gets its diagnostics (see
-analyze.py). Turning the result into q is ``selection``.
+``shrinkage=`` optionally shrinks the primary R, ``residual_rank=`` optionally adds
+R_residual as the primary R, and every R gets its diagnostics (see analyze.py). Turning the result into q is ``selection``.
 """
 
 from .analyze import Analysis, Bootstrap, analyze, analyze_sweep
@@ -64,8 +67,10 @@ from .logs import (
     redundancy_record,
     reset_logs,
     write_analysis,
+    write_json_atomic,
 )
 from .redundancy import MODES, RedundancyScore, compute_red, summarise, within_op_pairs
+from .residual import Residuals, null_max_bound, residual_rank_corr, residualize
 from .shrinkage import METHODS as SHRINKAGE_METHODS
 from .shrinkage import Shrunk, ledoit_wolf, schafer_strimmer, shrink
 
@@ -81,6 +86,7 @@ __all__ = [
     "Merged",
     "REDUNDANCY_LOG",
     "RedundancyScore",
+    "Residuals",
     "SHRINKAGE_METHODS",
     "Shrunk",
     "analyze",
@@ -103,9 +109,12 @@ __all__ = [
     "ledoit_wolf",
     "marchenko_pastur_edges",
     "merge_aliases",
+    "null_max_bound",
     "participation_ratio",
     "redundancy_record",
     "reset_logs",
+    "residual_rank_corr",
+    "residualize",
     "schafer_strimmer",
     "shared_factor_loadings",
     "shared_image_factor",
@@ -114,4 +123,5 @@ __all__ = [
     "vif",
     "within_op_pairs",
     "write_analysis",
+    "write_json_atomic",
 ]

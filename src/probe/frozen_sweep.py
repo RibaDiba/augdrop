@@ -22,6 +22,9 @@ the SAME magnitude setting:
   convergence drift into R (Simpson's paradox), and pooling magnitude settings mixes
   measurements that are not commensurable.
 
+Each image's loss under each op and on the clean image is kept too (``loss_matrix()``,
+the loss increase Delta that ``selection.nms`` ranks ops by). It is not part of G.
+
 Batch boundaries are kept, as one (B,) chunk per batch per op, because the downstream
 cluster bootstrap resamples whole batches. A batch that fails transiently (a
 RuntimeError such as CUDA OOM) is left out of G whole and listed in
@@ -47,10 +50,10 @@ from .grad_collect import (
     FdStep,
     ModelAdapter,
     ProbeError,
-    collect_grads,
     far_end,
     op_method,
     preserved_rng,
+    probe_batch,
     resolve_methods,
 )
 from .probe_set import ProbeSet
@@ -148,6 +151,11 @@ class Sweep:
     are the fade's intensity (NaN for an op with no magnitude). Every other op's rows
     (``"autograd"``, ``"tangent"``, ``"finite_diff"``) are d loss / d strength, signed
     toward a stronger augmentation (``grad_collect.strength_sign``).
+
+    ``losses[op]`` and ``clean_losses`` hold each image's loss under the op at its
+    magnitude and on the clean image, chunked like ``grads`` (``loss_matrix()``). NaN
+    where none was recorded: an unprobed op, a batch-mean adapter loss, or a sweep read
+    back from a G file or a log written before losses were.
     """
 
     names: list[str]
@@ -162,11 +170,14 @@ class Sweep:
     magnitudes: dict[str, list[np.ndarray]] = field(default_factory=dict)
     image_ids: list[tuple[str, ...]] = field(default_factory=list)
     failed_batches: list[dict] = field(default_factory=list)
+    losses: dict[str, list[np.ndarray]] = field(default_factory=dict)
+    clean_losses: list[np.ndarray] = field(default_factory=list)
 
     def __post_init__(self):
         for name in self.names:
             self.grads.setdefault(name, [])
             self.magnitudes.setdefault(name, [])
+            self.losses.setdefault(name, [])
 
     @property
     def n_images(self) -> int:
@@ -216,6 +227,24 @@ class Sweep:
             or [np.empty(0, dtype=int)]
         )
         return np.stack(rows), batch_ids
+
+    def loss_matrix(self) -> np.ndarray:
+        """Delta, (A, N) in G's row and column order: each image's loss under each op
+        minus its clean loss. All NaN when the sweep recorded no losses."""
+        n = self.n_images
+        if not self.clean_losses:
+            return np.full((len(self.names), n), np.nan)
+        clean = np.concatenate(self.clean_losses)
+        rows = [
+            np.concatenate(self.losses[name]) if self.losses[name] else np.full(n, np.nan)
+            for name in self.names
+        ]
+        lengths = {clean.shape[0]} | {row.shape[0] for row in rows}
+        if lengths != {n}:
+            raise ProbeError(
+                f"the losses are misaligned: lengths {sorted(lengths)} for {n} probed images"
+            )
+        return np.stack(rows) - clean
 
     def magnitude_summary(self) -> dict[str, dict]:
         """Per-op mean/min/max of the magnitudes actually probed. For a constant mode,
@@ -341,7 +370,7 @@ def sweep(
                     f"expects {list(ids)[:3]}... The loader is out of probe order."
                 )
             try:
-                rows = collect_grads(
+                probed = probe_batch(
                     adapter,
                     batch,
                     ops,
@@ -368,12 +397,14 @@ def sweep(
             checked = True
 
             result.image_ids.append(tuple(ids))
+            result.clean_losses.append(probed.clean)
             for name in names:
-                result.grads[name].append(rows[name])
+                result.grads[name].append(probed.grads[name])
                 result.magnitudes[name].append(drawn[name])
+                result.losses[name].append(probed.losses[name])
 
             if log is not None:
-                log.write(json.dumps(_record(result, k, ids, rows, drawn)) + "\n")
+                log.write(json.dumps(_record(result, k, ids, probed, drawn)) + "\n")
                 log.flush()
 
     if result.n_images == 0:
@@ -458,8 +489,9 @@ def _jsonable(values: np.ndarray) -> list:
     return [float(v) if math.isfinite(v) else None for v in values.tolist()]
 
 
-def _record(result: Sweep, k: int, ids, rows, drawn) -> dict:
-    """One aug_gradient_log.txt line."""
+def _record(result: Sweep, k: int, ids, probed, drawn) -> dict:
+    """One aug_gradient_log.txt line. ``losses`` and ``clean_loss`` are dropaug's
+    additions."""
     return {
         "checkpoint": result.checkpoint,
         "batch": k,
@@ -471,6 +503,8 @@ def _record(result: Sweep, k: int, ids, rows, drawn) -> dict:
         "probe_seed": result.probe_seed,
         "methods": result.methods,
         "meta": result.meta,
-        "grads": {name: _jsonable(rows[name]) for name in result.names},
+        "grads": {name: _jsonable(probed.grads[name]) for name in result.names},
         "magnitudes": {name: _jsonable(drawn[name]) for name in result.names},
+        "losses": {name: _jsonable(probed.losses[name]) for name in result.names},
+        "clean_loss": _jsonable(probed.clean),
     }

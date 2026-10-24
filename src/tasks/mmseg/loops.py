@@ -18,9 +18,9 @@ Ported from ``sensaug/loops/sensaug_loop.py`` and ``sensaug/loops/train_loops.py
 The perturbation goes through the preprocessor's eval slot
 (``GpuAugSegDataPreProcessor.set_eval``), as on Sensaug's diff32 path. The pdf goes to
 ``host.set_sa_pdf``. Lever 3 is ApplyWeightsHook's ``reweight``, called right after;
-in Sensaug it was GradCorrValLoop's ``_apply_redundancy_reweighting``. Both arms use
-this one loop: without an ApplyWeightsHook (plain sensaug) the pdf trains as
-generated.
+in Sensaug it was GradCorrValLoop's ``_apply_redundancy_reweighting``. The NMS arm's
+PruneHook has a ``reweight`` too, which zeroes its pruned ops in the fresh pdf. Every
+arm uses this one loop: with neither hook (plain sensaug) the pdf trains as generated.
 
 What Sensaug's train.py set for sensaug (its ``--aug-type ours``) / ``grad_corr``::
 
@@ -75,7 +75,7 @@ import json
 import math
 import os
 from pprint import pprint
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence, Union
 
 import torch
 from mmengine.device import get_device
@@ -88,7 +88,7 @@ import sa
 from hosts.sensaug import SA_CURVE_CADENCE
 
 from .backend import _mean_std, unwrap
-from .hooks import ApplyWeightsHook
+from .hooks import ApplyWeightsHook, PruneHook
 
 __all__ = [
     "RobustBaselineValLoop",
@@ -409,8 +409,10 @@ class RobustValLoop(ValLoop):
                 f"Refusing to produce a meaningless SA curve."
             )
 
-    def _weights_hook(self) -> Optional[ApplyWeightsHook]:
-        return next((h for h in self.runner.hooks if isinstance(h, ApplyWeightsHook)), None)
+    def _weights_hook(self) -> Optional[Union[ApplyWeightsHook, PruneHook]]:
+        return next(
+            (h for h in self.runner.hooks if isinstance(h, (ApplyWeightsHook, PruneHook))), None
+        )
 
     def _run_eval(self, ratio: float) -> dict:
         """``ratio`` of the val dataloader through ``run_iter``, then the evaluator."""

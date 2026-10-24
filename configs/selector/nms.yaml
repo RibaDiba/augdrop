@@ -1,0 +1,11 @@
+# Hard: greedy NMS over R_residual (stats/residual.py: the shared per-image factor
+# regressed out per op, then Spearman), with no statistical gate: no bootstrap, FDR,
+# n_min or shared-factor alarm. Ops are visited by mean loss increase, highest first; an
+# op whose R with an op already kept is above tau is pruned (q = 0). The two halves of
+# one op never suppress each other (probe.analysis.mask_within_op). The pruned set only
+# grows over the run, and pruned_ops.json carries it across --resume. Runs through
+# PruneHook (selection/nms.py, tasks/mmseg/hooks.py).
+name: nms
+lam: 1.0                   # a pruned op's weight is 1 - lam; must be 1 (this arm prunes)
+lambda_ramp: constant      # unused: the prune is all or nothing
+tau: 0.5                   # Cohen's (1988) "large" correlation, r^2 = 1/4 (FACTS D8)

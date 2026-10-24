@@ -204,8 +204,8 @@ def sweeps_from_gradient_log(path) -> list:
     """``aug_gradient_log.txt`` back into ``probe.Sweep``s, one per (checkpoint, meta,
     probe set, magnitude setting), in the order they were written.
 
-    The log holds every batch the probe kept, so G is exactly recomputed.
-    ``failed_batches`` is not in the log and comes back empty. Raises on a log whose
+    The log holds every batch the probe kept, so G is exactly recomputed, and so are the
+    losses behind ``Sweep.loss_matrix()`` when the log has them. ``failed_batches`` is not in the log and comes back empty. Raises on a log whose
     batches of one sweep disagree on the ops.
     """
     from probe import Sweep
@@ -242,8 +242,13 @@ def sweeps_from_gradient_log(path) -> list:
                 )
             elif names != sweep.names:
                 raise schema.SchemaError(f"{path}:{line_no}: this batch's ops differ from its sweep's")
+            # A log written before the probe recorded losses has none: NaN.
+            losses = record.get("losses") or {}
+            missing = [None] * len(record["image_ids"])
             for name in names:
                 sweep.grads[name].append(_array(record["grads"][name]))
                 sweep.magnitudes[name].append(_array(record["magnitudes"][name]))
+                sweep.losses[name].append(_array(losses.get(name, missing)))
+            sweep.clean_losses.append(_array(record.get("clean_loss", missing)))
             sweep.image_ids.append(tuple(record["image_ids"]))
     return list(sweeps.values())
