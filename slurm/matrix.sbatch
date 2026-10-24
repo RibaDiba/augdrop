@@ -3,7 +3,9 @@
 #SBATCH --job-name=dropaug-matrix
 #SBATCH --nodes=1
 
-## One array task = one train.sbatch run, so the same allocation.
+## One array task = one train.sbatch run, so the same allocation: 4 GPUs. The cap
+## (slurm/gate.sh) is 1 A6000 job or 2 A5000 jobs at a time; --submit sets the GPU
+## type (GPU=a6000|a5000) and the throttle (%1 / %2), whatever this line says.
 #SBATCH --time=24:00:00
 #SBATCH --qos=huge-long
 #SBATCH --account=gamma
@@ -11,8 +13,6 @@
 #SBATCH --gres=gpu:rtxa6000:4
 #SBATCH --mem=120gb
 #SBATCH --ntasks=16
-
-## Scavenger / tron fallbacks: see slurm/train.sbatch.
 
 # %A_%a: array job id and task index. The body groups them into
 # slurm/logs/<job-name>/, so one submission's tasks share one directory.
@@ -32,12 +32,12 @@ set -o pipefail
 #
 #   bash slurm/matrix.sbatch             list the grid and the command that submits it
 #   bash slurm/matrix.sbatch --submit    submit it
-#   sbatch --array=3,17 slurm/matrix.sbatch   rerun chosen points (same env as before)
+#   POINTS=3,17 bash slurm/matrix.sbatch --submit   rerun chosen points (same env as before)
 #
 # Grid (space-separated, env):
 #   BACKBONES="segformer"        configs/task backbones (pspnet, convnext, ...)
-#   HOSTS="sensaug uniform"      the DIFF32 hosts; trivialaugment_diff also trains, the
-#                                torchvision hosts don't
+#   HOSTS="sensaug uniform"      the DIFF32 hosts; trivialaugment_diff, randaugment_diff and
+#                                augmix_diff also train, the torchvision hosts don't
 #   DATASETS="cityscapes ade20k pascal_voc12 loveda"   the default; potsdam, synapse, a2i2haze
 #                                and acdc also train (every configs/recipe pair is Sensaug's)
 #   SELECTORS="none mrmr random_k kl_reweight qpfs dpp relevance_only"   (nms, the
@@ -48,7 +48,11 @@ set -o pipefail
 # of the grid for the first backbone.
 #
 # Other env:
-#   MAX_PARALLEL=8                --submit's array throttle (%K)
+#   POINTS=3,17                   --submit only these task indices (Slurm --array syntax)
+#   GPU=a6000                     --submit's card: a6000 (one task at a time, %1) or a5000
+#                                 (two at a time, %2). Anything submitted while the array is
+#                                 in flight waits for it, and the array waits for what was
+#                                 in flight (slurm/gate.sh). MAX_PARALLEL is ignored
 #   EXTRA_SBATCH_ARGS="..."       forwarded to sbatch by --submit
 #   NAME=refactor1                --submit names the array refactor1-dropaug-matrix
 #   everything train.sbatch reads (LAM, CLUSTER, DESCENDING_MA, INV_AUG, WORK_DIR, RUN_TAG,
@@ -98,10 +102,15 @@ if [ -z "${SLURM_ARRAY_TASK_ID:-}" ]; then
         read -r _h _d _s _n _b <<< "$(point "${k}")"
         printf '%5d  %-14s %-16s %-14s %-16s %s\n' "${k}" "${_b}" "${_h}" "${_d}" "${_s}" "${_n}"
     done
-    ARRAY="0-$(( TOTAL - 1 ))%${MAX_PARALLEL:-8}"
+    # shellcheck disable=SC1091
+    source "${REPO_DIR}/slurm/gate.sh"
+    TYPE="$(gate_type "${GPU:-a6000}")" || exit 1
+    THROTTLE="$(gate_array_throttle "${TYPE}")"
+    [ -z "${MAX_PARALLEL:-}" ] || echo "NOTE: MAX_PARALLEL=${MAX_PARALLEL} ignored; the cap sets %${THROTTLE}." >&2
+    ARRAY="${POINTS:-0-$(( TOTAL - 1 ))}%${THROTTLE}"
     echo
     echo "${TOTAL} runs (${#H[@]} hosts x ${#D[@]} datasets x ${#S[@]} selectors x ${#N[@]} seeds x ${#B[@]} backbones)," \
-         "each a 4-GPU job, plus one 1-GPU eval each."
+         "each a 4-GPU ${TYPE} job (${THROTTLE} at a time), plus one 1-GPU eval each."
 
     if [ "${1:-}" != "--submit" ]; then
         echo "submit with:  bash ${BASH_SOURCE[0]} --submit    (sbatch --array=${ARRAY})"
@@ -118,7 +127,8 @@ if [ -z "${SLURM_ARRAY_TASK_ID:-}" ]; then
     # Exported, so the tasks decode against these lists and not whatever the
     # defaults above are by the time they start.
     export HOSTS DATASETS SELECTORS SEEDS BACKBONES
-    exec sbatch --array="${ARRAY}" "${EXTRA_SB[@]}" "${BASH_SOURCE[0]}"
+    gate_sbatch "${TYPE}" array --array="${ARRAY}" "${EXTRA_SB[@]}" -- "${BASH_SOURCE[0]}"
+    exit $?
 fi
 
 # ------------------------------------------------------- inside an array task ----

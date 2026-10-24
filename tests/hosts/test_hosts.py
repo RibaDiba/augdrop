@@ -6,8 +6,17 @@ import numpy as np
 import pytest
 
 from hosts import HOSTS, AugHost, build_host
+from hosts.augmix import AugMixDiffHost
 from hosts.autoaugment import IMAGENET_POLICY, AutoAugmentHost, vocab_name
-from hosts.randaugment import IDENTITY, OP_ORDER, RandAugmentHost
+from hosts.randaugment import (
+    IDENTITY,
+    OP_ORDER,
+    PUBLISHED,
+    STAND_INS,
+    RandAugmentDiffHost,
+    RandAugmentHost,
+    published,
+)
 from hosts.sensaug import (
     DIFF32_OPS,
     NONE_KEY,
@@ -26,6 +35,8 @@ FACTORIES = {
     "randaugment": lambda: RandAugmentHost(probe_interval=1000),
     "trivialaugment": lambda: TrivialAugmentHost(probe_interval=1000),
     "trivialaugment_diff": lambda: TrivialAugmentDiffHost(probe_interval=1000),
+    "randaugment_diff": lambda: RandAugmentDiffHost(dataset="cityscapes", probe_interval=1000),
+    "augmix_diff": lambda: AugMixDiffHost(probe_interval=1000),
     "autoaugment": lambda: AutoAugmentHost(probe_interval=1000),
     "uniform": lambda: UniformHost(probe_interval=1000),
 }
@@ -194,6 +205,8 @@ def test_vocabulary_is_a_vocab(name):
         (RandAugmentHost, {"families": ["randaug_default"], "exclude": ["randaug_default.Identity"]}),
         (TrivialAugmentHost, {"families": ["trivialaug_wide"], "exclude": ["trivialaug_wide.Identity"]}),
         (TrivialAugmentDiffHost, {"families": ["trivialaug_diff"]}),
+        (lambda: RandAugmentDiffHost(dataset="cifar10"), {"families": ["randaug_diff"]}),
+        (AugMixDiffHost, {"families": ["augmix_diff"]}),
     ],
 )
 def test_vocabulary_order_is_vocab_order(host, config):
@@ -470,3 +483,90 @@ def test_trivialaugment_diff_draws_one_shared_bin():
     columns = np.stack([bins[name] for name in host.vocabulary()])
     assert (columns == columns[0]).all()
     assert columns.min() >= 0 and columns.max() < host.num_magnitude_bins
+
+
+# --- randaugment_diff: the paper's published (N, M) ---------------------------------
+
+
+@pytest.mark.parametrize(
+    "dataset, n, m", [("cifar10", 3, 5), ("cifar100", 2, 14), ("cityscapes", 2, 9), ("pascal_voc12", 2, 9)]
+)
+def test_randaugment_diff_applies_the_published_n_and_m(dataset, n, m):
+    host = RandAugmentDiffHost(dataset=dataset)
+    assert (host.num_ops, host.level) == (n, m)
+    # Level M is bin 3M of torchvision's 31-bin grid, continued past bin 30 for M > 10.
+    assert host.magnitude == 3 * m
+    assert host.num_magnitude_bins == max(31, 3 * m + 1)
+    bins, _ = host.draw_bins(16, np.random.default_rng(0))
+    assert set(bins) == set(host.vocabulary())
+    assert all((b == 3 * m).all() for b in bins.values())
+
+
+def test_every_stand_in_is_a_published_row():
+    assert set(STAND_INS.values()) <= set(PUBLISHED)
+    assert published("cifar100") == (("CIFAR-100", "Wide-ResNet-28-10"), (2, 14))
+
+
+def test_every_dataset_config_has_a_stand_in():
+    root = Path(__file__).resolve().parents[2] / "configs" / "dataset"
+    names = set()
+    for path in root.glob("*.yaml"):
+        line = next(line for line in path.read_text().splitlines() if line.startswith("name:"))
+        names.add(line.split(":", 1)[1].split("#")[0].strip())
+    assert names and names <= set(STAND_INS)
+
+
+def test_randaugment_diff_refuses_an_unpublished_dataset():
+    with pytest.raises(ValueError, match="publishes no"):
+        RandAugmentDiffHost(dataset="imagenet")
+
+
+def test_randaugment_diff_splits_randaugments_distribution():
+    """Uniform q is RandAugment: 1/14 per entry, a signed op's half to each direction."""
+    host, torchvision_host = RandAugmentDiffHost(dataset="cityscapes"), RandAugmentHost()
+    assert host.none_prob == torchvision_host.none_prob == pytest.approx(1 / 14)
+    probs = dict(zip(host.vocabulary(), host.base_probs()))
+    for name, p in zip(torchvision_host.vocabulary(), torchvision_host.base_probs()):
+        base = name.split(".", 1)[1]
+        pos, neg = f"randaug_diff.{base}_pos", f"randaug_diff.{base}_neg"
+        if pos in probs:
+            assert probs[pos] == probs[neg] == pytest.approx(p / 2)
+        else:
+            assert probs[f"randaug_diff.{base}"] == pytest.approx(p)
+
+
+# --- augmix_diff: AugMix as Sensaug ran it -------------------------------------------
+
+
+def test_augmix_diff_is_sensaugs_augmix():
+    v2 = pytest.importorskip("torchvision.transforms.v2")
+    host = AugMixDiffHost()
+    # Sensaug's AugMixTransform: AugMix(severity=3, mixture_width=3, chain_depth=-1, alpha=1.0, all_ops=True)
+    assert (host.severity, host.mixture_width, host.chain_depth, host.alpha) == (3, 3, -1, 1.0)
+    assert host.num_magnitude_bins == v2.AugMix()._PARAMETER_MAX
+    assert set(v2.AugMix._AUGMENTATION_SPACE) == set(OP_ORDER) - {IDENTITY}
+    assert host.none_prob == 0.0
+    probs = dict(zip(host.vocabulary(), host.base_probs()))
+    for op in OP_ORDER[1:]:
+        share = probs.get(f"augmix_diff.{op}", 0.0) + probs.get(f"augmix_diff.{op}_pos", 0.0)
+        share += probs.get(f"augmix_diff.{op}_neg", 0.0)
+        assert share == pytest.approx(1 / 13), op
+
+
+def test_augmix_diff_draws_its_first_severity_bins():
+    host = AugMixDiffHost()
+    bins, _ = host.draw_bins(500, np.random.default_rng(0))
+    columns = np.stack([bins[name] for name in host.vocabulary()])
+    assert (columns == columns[0]).all()
+    assert set(np.unique(columns[0])) == set(range(host.severity))
+
+
+def test_augmix_diff_mixing_weights():
+    host = AugMixDiffHost()
+    depths, clean, chains = host.draw_mix(2000, np.random.default_rng(0))
+    assert depths.shape == chains.shape == (2000, host.mixture_width) and clean.shape == (2000,)
+    np.testing.assert_allclose(clean + chains.sum(1), 1.0)
+    assert (clean >= 0).all() and (chains >= 0).all()
+    # Beta(1, 1) is uniform: mean 1/2.
+    assert abs(clean.mean() - 0.5) < 0.03
+    assert set(np.unique(depths)) == {1, 2, 3}

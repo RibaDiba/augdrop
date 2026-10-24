@@ -24,12 +24,16 @@ EXPECTED_METHOD = {
     "randaug_default": FINITE_DIFF,
     "trivialaug_wide": FINITE_DIFF,
     "trivialaug_diff": AUTOGRAD,
+    "randaug_diff": AUTOGRAD,
+    "augmix_diff": AUTOGRAD,
     "autoaugment": UNPROBED,
 }
+# The split families: each keeps four torchvision ops as they are.
+DIFF_FAMILIES = {"trivialaug_diff", "randaug_diff", "augmix_diff"}
 MAGNITUDE_FREE = {"Identity", "AutoContrast", "Equalize", "Invert"}
 # torchvision's enhance ops carry an exact tangent.
 ENHANCE = {"Brightness", "Color", "Contrast", "Sharpness"}
-# trivialaug_diff keeps these as torchvision's own ops: no tangent, finite differences.
+# The split families keep these as torchvision's own ops: no tangent, finite differences.
 EXACT_STEPPED = {"Posterize", "Solarize"}
 
 
@@ -45,7 +49,7 @@ def test_every_op_is_measured_the_way_its_spec_says():
         expected = EXPECTED_METHOD[spec.family]
         if base in MAGNITUDE_FREE:
             expected = UNPROBED
-        elif spec.family == "trivialaug_diff" and base in EXACT_STEPPED:
+        elif spec.family in DIFF_FAMILIES and base in EXACT_STEPPED:
             expected = FINITE_DIFF
         elif expected == FINITE_DIFF and base in ENHANCE:
             expected = TANGENT
@@ -78,8 +82,9 @@ def test_every_host_vocabulary_probes():
     """A host's vocabulary is a valid probe op list, in the host's order."""
     hosts = pytest.importorskip("hosts")
     batch = make_batch(n=2, size=24)
+    required = {"sensaug": {"max_iters": 20000}, "randaugment_diff": {"dataset": "cityscapes"}}
     for host_name, cls in hosts.HOSTS.items():
-        host = cls(max_iters=20000) if host_name == "sensaug" else cls()
+        host = cls(**required.get(host_name, {}))
         ops = vocab.build_vocab({"ops": host.vocabulary()})
         magnitudes = {n: strength_to_magnitude(s, 0.3) for n, s in ops.items() if s.has_magnitude}
         rows = collect_grads(ToyAdapter(), batch, ops, magnitudes)

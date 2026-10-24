@@ -6,17 +6,20 @@
 
 from typing import Iterable
 
+from .augmix import AugMixDiffHost
 from .autoaugment import AutoAugmentHost
 from .base import AugHost
 from .prune import PRUNE_FILE, Prune, draw_random_prune, resolve_prune
-from .randaugment import RandAugmentHost
+from .randaugment import RandAugmentDiffHost, RandAugmentHost
 from .sensaug import SensAugHost
 from .trivialaugment import TrivialAugmentDiffHost, TrivialAugmentHost
 from .uniform import UniformHost
 
 __all__ = [
     "AugHost",
+    "AugMixDiffHost",
     "AutoAugmentHost",
+    "RandAugmentDiffHost",
     "RandAugmentHost",
     "SensAugHost",
     "TrivialAugmentDiffHost",
@@ -35,9 +38,11 @@ HOSTS = {
     for cls in (
         SensAugHost,
         RandAugmentHost,
+        RandAugmentDiffHost,
         TrivialAugmentHost,
         TrivialAugmentDiffHost,
         AutoAugmentHost,
+        AugMixDiffHost,
         UniformHost,
     )
 }
