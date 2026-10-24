@@ -82,8 +82,9 @@ def test_every_host_vocabulary_probes():
     """A host's vocabulary is a valid probe op list, in the host's order."""
     hosts = pytest.importorskip("hosts")
     batch = make_batch(n=2, size=24)
+    required = {"sensaug": {"max_iters": 20000}, "randaugment_diff": {"dataset": "cityscapes"}}
     for host_name, cls in hosts.HOSTS.items():
-        host = cls(max_iters=20000) if host_name == "sensaug" else cls()
+        host = cls(**required.get(host_name, {}))
         ops = vocab.build_vocab({"ops": host.vocabulary()})
         magnitudes = {n: strength_to_magnitude(s, 0.3) for n, s in ops.items() if s.has_magnitude}
         rows = collect_grads(ToyAdapter(), batch, ops, magnitudes)

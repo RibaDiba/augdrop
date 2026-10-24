@@ -1,0 +1,25 @@
+# RandAugment's policy over its ops made differentiable (vocab randaug_diff), at the
+# paper's published (N, M) for this dataset. The (N, M) table is in src/hosts/randaugment.py
+# (PUBLISHED, and STAND_INS for the datasets the paper doesn't cover), not here: it is
+# the paper's number, not a knob. cityscapes and the other segmentation sets get ImageNet
+# ResNet-50's (2, 9), cifar10 (3, 5), cifar100 (2, 14). Each image gets N draws, uniform
+# over the 13 ops plus Identity, at level M. The 9 signed ops are split into _pos/_neg
+# (1/28 of a draw each). Trainable: the mmseg preprocessor applies these ops on GPU.
+defaults:
+  - override /vocab@_global_.vocab: randaug_diff
+
+name: randaugment_diff
+dataset: ${dataset.name}   # picks the published (N, M)
+probe_interval: ${probe.schedule.interval}
+probe_iters: ${probe.schedule.iters}
+control_iters: ${probe.schedule.control_iters}
+# The 18 split ops go through autograd. The four with no derivative in their
+# magnitude are torchvision's own and are faded in (probe/fade.py), as in
+# trivialaugment_diff.yaml.
+fade:
+  ops:
+    - randaug_diff.Solarize
+    - randaug_diff.Posterize
+    - randaug_diff.AutoContrast
+    - randaug_diff.Equalize
+  at: 1.0
