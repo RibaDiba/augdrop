@@ -7,7 +7,7 @@
 #   bash slurm/submit.sh refactor1 slurm/train.sbatch sensaug cityscapes mrmr 0
 #       -> job name `refactor1-dropaug-train`
 #
-# THE JOB CAP (slurm/gate.sh): at most ONE A6000 job or TWO A5000 jobs in flight, each
+# THE JOB CAP (slurm/gate.sh): at most ONE A6000 job or FOUR A5000 jobs (16 GPUs) in flight, each
 # with the GPU count its script's header gives (train 4, probe 1). GPU=a6000 (default) or
 # a5000 picks the card; a job submitted past the cap waits for the ones ahead of it.
 # eval.sbatch is exempt and goes through as is.

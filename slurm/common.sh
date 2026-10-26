@@ -127,6 +127,6 @@ split_args() {
     read -r -a "$1" <<< "${2:-}"
 }
 
-# The job cap (1 A6000 job or 2 A5000 jobs in flight): gate_sbatch, gate_check_running.
+# The job cap (1 A6000 job or 4 A5000 jobs in flight): gate_sbatch, gate_check_running.
 # shellcheck disable=SC1091
 source "${REPO_DIR:-/fs/gamma-projects/pruneaug}/slurm/gate.sh"
