@@ -1,0 +1,51 @@
+# Faster AutoAugment (Hataya et al., ECCV 2020) over its 26 ops (vocab faster_aa): a
+# policy of 10 sub-policies x 2 stages, searched before training by
+# scripts/faa_search.py (slurm/faa_search.sbatch), then trained on. The host is
+# src/hosts/faster_autoaugment/host.py; the search is policy.py / search.py next to it.
+# Trainable: the mmseg preprocessor draws a sub-policy per image and applies its stages.
+defaults:
+  - override /vocab@_global_.vocab: faster_aa
+
+name: faster_autoaugment
+# The searched policy: the search's <out>/final.npz. Absolute, or relative to where the
+# entry point runs (the repo root). null is the search's starting point, which can be
+# probed with but never trained on (check_trainable refuses it).
+policy_file: null
+num_sub_policies: 10       # the starting point's shape only; a policy file sets its own
+operation_count: 2
+probe_interval: ${probe.schedule.interval}
+probe_iters: ${probe.schedule.iters}
+control_iters: ${probe.schedule.control_iters}
+# The probe's magnitude: per image, one of the magnitudes the searched policy applies
+# each op at, weighted by how often it does. The 18 split ops go through autograd.
+# The ops with no derivative in their magnitude are faded in: Solarize's and Posterize's
+# steps, Cutout's hard edge, and the four with none (HorizontalFlip, Invert,
+# AutoContrast, Equalize). SamplePairing blends in an image of the batch, so it
+# gets an unprobed NaN row (it can't be faded either).
+fade:
+  ops:
+    - faster_aa.HorizontalFlip
+    - faster_aa.Solarize
+    - faster_aa.Posterize
+    - faster_aa.Invert
+    - faster_aa.AutoContrast
+    - faster_aa.Equalize
+    - faster_aa.Cutout
+  at: 1.0
+# The search (scripts/faa_search.py), not the host's: popped by host_kwargs. Paper and dda
+# defaults (src/hosts/faster_autoaugment/search.py). One search per dataset, with the task
+# below's segmentor; every backbone then trains on its policy.
+search:
+  task: mmseg_segformer_b0   # the search's segmentor (+ that dataset's recipe)
+  train_size: 4000           # images searched on (the paper's subset), capped at the split
+  epochs: 20
+  batch_size: 8              # half real, half augmented
+  num_chunks: 4              # sub-policies drawn per batch (dda: one per chunk)
+  temperature: 0.05          # the op softmax (eta)
+  bernoulli_temperature: 0.05  # the relaxed Bernoulli (lambda; dda's code uses 0.1)
+  task_factor: 0.1           # epsilon, the task loss's weight
+  gp_factor: 10.0
+  lr: 0.001                  # Adam, betas (0, 0.999), the critic and the policy alike
+  policy_lr: 0.001
+  num_workers: 4
+  seed: 0
