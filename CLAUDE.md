@@ -19,7 +19,7 @@ flight at a time. Never a mix, never more.** A training job keeps its 4 GPUs (pr
 1); the cap is on how many jobs run, not on GPUs per job. A job submitted past the cap
 waits for the ones ahead (`--dependency=afterany`), like a queue. `eval.sbatch` is the
 one exemption. This is the owner's most important standing instruction: never submit with
-a bare `sbatch`, never pass `--gres` / `-G` / `--gpus*` / `--dependency` to get around
+a bare `sbatch`, never pass `--gres` / `-G` / `--gpus*` / `--nodes` / `--array` / `--dependency` to get around
 it, never raise a matrix throttle, and never write a new sbatch script that skips the
 gate. Submit with `bash slurm/submit.sh <name> slurm/train.sbatch ...` (`GPU=a5000` for
 the A5000 arm; default a6000) or `bash slurm/matrix.sbatch --submit`. See
@@ -513,9 +513,12 @@ probe 1, at most 4); the gate sets the type. It is enforced twice. At submission
 `gate_sbatch` (used by `submit.sh` and `matrix.sbatch --submit`) reads `squeue` for this
 repo's train/probe/matrix jobs (told apart by command path under `slurm/`, so other
 repos' jobs are not counted) and makes the new job wait (`afterany`) for every in-flight
-job older than the ones that fit beside it. It refuses `--gres`, `-G`, `--gpus*` and
-`--dependency` in extra sbatch flags, and fails rather than guess if `squeue` fails.
-Submissions are serialized on `slurm/logs/.gate.lock`. At job start, `gate_check_running`
+job older than the ones that fit beside it. It submits on one node (`--nodes=1`) and
+refuses `--gres`, `-G`, `--gpus*`, `--nodes` / `-N` and `--dependency` in extra sbatch
+flags, `--array` on a single job, and an array without exactly one `--array=<indices>%K`
+within the throttle (`matrix.sbatch` also refuses `--array` in `EXTRA_SBATCH_ARGS`). It
+fails rather than guess if `squeue` fails. Submissions are serialized on
+`slurm/logs/.gate.lock` next to `gate.sh`, whatever `LOG_BASE` says. At job start, `gate_check_running`
 (the train, probe, faa_search and test bodies) refuses to run if the running jobs already exceed the cap, which
 catches a bare `sbatch`; that check comes after the allocation, so a bypass still holds
 its GPUs for a few seconds. A matrix array is submitted with `%1` (A6000) or `%2`

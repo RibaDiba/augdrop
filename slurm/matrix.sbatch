@@ -55,7 +55,7 @@ set -o pipefail
 #                                 (two at a time, %2). Anything submitted while the array is
 #                                 in flight waits for it, and the array waits for what was
 #                                 in flight (slurm/gate.sh). MAX_PARALLEL is ignored
-#   EXTRA_SBATCH_ARGS="..."       forwarded to sbatch by --submit
+#   EXTRA_SBATCH_ARGS="..."       forwarded to sbatch by --submit (not --array: use POINTS)
 #   NAME=refactor1                --submit names the array refactor1-dropaug-matrix
 #   everything train.sbatch reads (LAM, CLUSTER, DESCENDING_MA, INV_AUG, WORK_DIR, RUN_TAG,
 #   TRAIN_ARGS, ALLOW_RESUME, EVAL, PRUNE_OPS, PRUNE_RANDOM, PRUNE_SEED, HOLD_NONE_PROB,
@@ -120,6 +120,13 @@ if [ -z "${SLURM_ARRAY_TASK_ID:-}" ]; then
     fi
     EXTRA_SB=()
     [ -n "${EXTRA_SBATCH_ARGS:-}" ] && read -r -a EXTRA_SB <<< "${EXTRA_SBATCH_ARGS}"
+    for _o in "${EXTRA_SB[@]}"; do
+        case "${_o}" in
+            -a|-a*|--array|--array=*)
+                echo "ERROR: EXTRA_SBATCH_ARGS may not set ${_o}: the array is the grid (POINTS) at the cap's throttle." >&2
+                exit 1 ;;
+        esac
+    done
     if [ -n "${NAME:-}" ]; then
         case "${NAME}" in
             *[!a-zA-Z0-9_-]*) echo "ERROR: NAME='${NAME}' must be [A-Za-z0-9_-]." >&2; exit 1 ;;

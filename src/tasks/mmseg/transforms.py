@@ -35,9 +35,9 @@ with the cls loop):
 - an ``autoaugment_diff`` host: AutoAugment's ImageNet policy over ``randaug_diff`` (and
   ``autoaugment.Invert``), a sub-policy per image and its two steps (``host.draw_slots``)
 - a ``madaug`` host (``POLICY_HOSTS``): MADAug's ops at its policy's per-image draws, which
-  depend on the model, so ``MADAugTrainLoop`` computes them and installs them before
-  each step (``set_policy_slots``); this applies them (``apply_slots``) and raises if a
-  training batch arrives without them
+  depend on the model, so ``MADAugPolicyHook`` (``madaug_hooks.py``) computes them and
+  installs them before each step (``set_policy_slots``); this applies them
+  (``apply_slots``) and raises if a training batch arrives without them
 - a ``faster_autoaugment`` host (``STAGE_HOSTS``): Faster AutoAugment's searched policy over
   ``faster_aa``, a sub-policy per image and its stages applied in turn
   (``host.draw_stages``); the policy file comes from scripts/faa_search.py
@@ -133,7 +133,8 @@ class GpuAugSegDataPreProcessor(SegDataPreProcessor):
                 if self._policy_slots is None:
                     raise RuntimeError(
                         f"host {self.host.name!r} trains on its policy's draws, and none were "
-                        f"installed for this batch; train it with its loop (MADAugTrainLoop)"
+                        f"installed for this batch; it trains with MADAugPolicyHook (config.py adds "
+                        f"it for a host with a policy: block), or set augment=False to train clean"
                     )
                 draws, self._policy_slots = self._policy_slots, None
         else:

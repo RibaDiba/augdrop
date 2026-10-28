@@ -21,9 +21,11 @@
 #
 # Two layers, because sbatch can be called by hand:
 #   gate_sbatch         at submission. Every submit path goes through it (submit.sh,
-#                       matrix.sbatch --submit). It picks the GPU type, adds the dependency
-#                       on every in-flight job older than the ones that fit beside the new
-#                       one, and refuses --gres / --dependency flags that would defeat it.
+#                       matrix.sbatch --submit). It picks the GPU type and one node, adds
+#                       the dependency on every in-flight job older than the ones that fit
+#                       beside the new one, and refuses --gres / --nodes / --dependency
+#                       flags that would defeat it, --array on a single job, and an array
+#                       whose throttle is missing or above the cap's.
 #   gate_check_running  at job start (train.sbatch, probe.sbatch). The backstop for a
 #                       job that was submitted without the gate: it refuses to run if
 #                       the running jobs already exceed the cap. The refusal comes after
@@ -36,6 +38,7 @@
 
 GATE_CAP=2
 GATE_MAX_GPUS=4
+_GATE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # awk helpers shared by the two squeue readers below. squeue -o '%i|%o|%b' rows are
 # <job id>|<command>|<gres>, e.g. 7878654_7|/…/slurm/matrix.sbatch|gres/gpu:rtxa6000:4.
@@ -120,25 +123,46 @@ gate_deps() {
 }
 
 # gate_sbatch <a6000|a5000> <single|array> [sbatch options...] -- <script> [args...]
-# sbatch with the GPU type set, the GPU count the script's header asks for (1 to
-# GATE_MAX_GPUS), and the dependency that keeps the cap. The options may not set the
-# GPU or a dependency. Submissions are serialized on a lock, so two at once do not both
-# read the same queue.
+# sbatch on one node, with the GPU type set, the GPU count the script's header asks for
+# (1 to GATE_MAX_GPUS), and the dependency that keeps the cap. The options may not set
+# the GPU, the node count or a dependency; a single job may not be an array, and an
+# array must carry one --array=<indices>%K with K within gate_array_throttle.
+# Submissions are serialized on a lock, so two at once do not both read the same queue.
 gate_sbatch() {
-    local type kind opts=() o w n
+    local type kind opts=() o w n i spec="" arrays=0 throttle
     type="$(gate_type "${1:-}")" || return 1
     kind="${2:-}"; shift 2 || { echo "gate_sbatch: usage: <type> <single|array> [opts] -- script" >&2; return 2; }
     case "${kind}" in single|array) ;; *) echo "gate_sbatch: kind must be single or array" >&2; return 2 ;; esac
     while [ "$#" -gt 0 ] && [ "$1" != "--" ]; do opts+=("$1"); shift; done
     [ "${1:-}" = "--" ] || { echo "gate_sbatch: missing -- before the script" >&2; return 2; }
     shift
-    for o in "${opts[@]}"; do
+    for (( i = 0; i < ${#opts[@]}; i++ )); do
+        o="${opts[i]}"
         case "${o}" in
-            --gres|--gres=*|-G|-G*|--gpus|--gpus=*|--gpus-per-*|--dependency|--dependency=*|-d|-d*)
-                echo "ERROR: ${o} is not allowed: the GPU and the dependency belong to the cap (slurm/gate.sh)." >&2
+            --gres|--gres=*|-G|-G*|--gpus|--gpus=*|--gpus-per-*|--dependency|--dependency=*|-d|-d*|--nodes|--nodes=*|-N|-N*)
+                echo "ERROR: ${o} is not allowed: the GPU, the node count and the dependency belong to the cap (slurm/gate.sh)." >&2
                 return 1 ;;
+            --array=*) spec="${o#--array=}"; arrays=$(( arrays + 1 )) ;;
+            -a?*) spec="${o#-a}"; arrays=$(( arrays + 1 )) ;;
+            --array|-a) spec="${opts[i+1]:-}"; arrays=$(( arrays + 1 )); i=$(( i + 1 )) ;;
         esac
     done
+    # A single job's --array would run many jobs on one job's cost. An array runs at most
+    # its throttle at once, so it must name one within the cap (sbatch keeps the last
+    # --array it is given, so exactly one).
+    if [ "${kind}" = "single" ] && (( arrays > 0 )); then
+        echo "ERROR: --array is not allowed on a single job: an array is many jobs (slurm/gate.sh)." >&2
+        return 1
+    fi
+    if [ "${kind}" = "array" ]; then
+        throttle="$(gate_array_throttle "${type}")"
+        if (( arrays != 1 )) || [[ ! "${spec}" =~ ^[^%]+%([0-9]+)$ ]] \
+            || (( 10#${BASH_REMATCH[1]} < 1 || 10#${BASH_REMATCH[1]} > throttle )); then
+            echo "ERROR: an array needs exactly one --array=<indices>%K with 1 <= K <= ${throttle} on ${type}" \
+                 "(got ${arrays} --array, last '${spec}')." >&2
+            return 1
+        fi
+    fi
     w="$(gate_weight "${type}")"
     [ "${kind}" = "array" ] && w="${GATE_CAP}"
     n="$(sed -n 's/^#SBATCH --gres=gpu:[^:]*:\([0-9][0-9]*\).*/\1/p' "${1:-/dev/null}" 2>/dev/null | head -n 1)"
@@ -148,7 +172,9 @@ gate_sbatch() {
         return 1
     fi
 
-    local lock="${LOG_BASE:-$(_gate_repo_dir)/slurm/logs}/.gate.lock"
+    # Beside this file, not under LOG_BASE: every submitter of this checkout takes the
+    # same lock, whatever its environment says.
+    local lock="${_GATE_DIR}/logs/.gate.lock"
     mkdir -p "$(dirname "${lock}")" 2>/dev/null
     (
         if command -v flock >/dev/null 2>&1; then
@@ -162,7 +188,7 @@ gate_sbatch() {
         else
             echo "gate: ${type} x${n} (cap: 1 A6000 job or 2 A5000 jobs) -> nothing ahead, can start at once" >&2
         fi
-        sbatch --gres="gpu:${type}:${n}" ${deps:+--dependency="afterany:${deps}"} "${opts[@]}" "$@"
+        sbatch --nodes=1 --gres="gpu:${type}:${n}" ${deps:+--dependency="afterany:${deps}"} "${opts[@]}" "$@"
     ) 9>"${lock}"
 }
 
