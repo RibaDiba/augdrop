@@ -1,0 +1,22 @@
+# SmartSamplingAugment (Negassi, Wagner & Reiterer 2022, Algorithm 2) over its ops made
+# differentiable (vocab smartsampling_diff). Per image, with probability P annealed
+# linearly from 0 to 1 over training, 2 distinct ops drawn by weights from RandAugment's
+# per-op gains, both at one level uniform on 5..30 of 30. The weights, the levels and the
+# schedule are the paper's (reconstructed: no code was released) and live in
+# src/hosts/smartsampling.py, not here. Trainable: the mmseg preprocessor applies these
+# ops on GPU, and HostProgressHook gives the host the step.
+defaults:
+  - override /vocab@_global_.vocab: smartsampling_diff
+
+name: smartsampling_diff
+max_iters: ${task.max_iters}   # P(augment) = step / max_iters
+probe_interval: ${probe.schedule.interval}
+probe_iters: ${probe.schedule.iters}
+control_iters: ${probe.schedule.control_iters}
+# The probe's magnitude: one level per image, uniform on 5..30, Sharpness's two
+# directions on their own levels (hosts/smartsampling.py, draw_bins). The 12 split ops
+# go through autograd; AutoContrast has no magnitude and is faded in (probe/fade.py).
+fade:
+  ops:
+    - smartaug_diff.AutoContrast
+  at: 1.0
