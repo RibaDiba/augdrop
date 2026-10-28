@@ -15,6 +15,7 @@ from hosts.randaugment import RandAugmentHost
 from hosts.sensaug import DIFF32_OPS, NONE_KEY, SensAugHost
 from hosts.augmix import AugMixDiffHost
 from hosts.randaugment import RandAugmentDiffHost
+from hosts.smartsampling import SmartSamplingDiffHost
 from hosts.trivialaugment import TrivialAugmentDiffHost, TrivialAugmentHost
 from hosts.uniform import UniformHost
 
@@ -26,6 +27,7 @@ PER_OP = {
     "trivialaugment_diff": lambda: TrivialAugmentDiffHost(probe_interval=1000),
     "randaugment_diff": lambda: RandAugmentDiffHost(dataset="ade20k", probe_interval=1000),
     "augmix_diff": lambda: AugMixDiffHost(probe_interval=1000),
+    "smartsampling_diff": lambda: SmartSamplingDiffHost(max_iters=20000, probe_interval=1000),
     "uniform": lambda: UniformHost(probe_interval=1000),
 }
 

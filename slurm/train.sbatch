@@ -96,6 +96,11 @@ set -o pipefail
 #                                   HOLD_NONE_PROB / PROBE_PRUNED are not in it: use RUN_TAG.
 #                                   Give named ops through PRUNE_OPS, not TRAIN_ARGS, so the
 #                                   run name carries them.
+#   FAA_POLICY=<path>               host faster_autoaugment only: its searched policy
+#                                   (host.policy_file). Default
+#                                   <WORK_DIR>/faa_search_<dataset>/final.npz, what
+#                                   slurm/faa_search.sbatch <dataset> writes; the run
+#                                   refuses to start without one
 #   ALLOW_RESUME=1                  continue a run that already has a checkpoint
 #                                   (passes --resume)
 #   EVAL=0                          don't queue slurm/eval.sbatch afterwards
@@ -235,6 +240,14 @@ TRAIN_FLAGS=(
 if [ "${HOST}" = "sensaug" ]; then
     [ "${DESCENDING_MA:-1}" != "0" ] && TRAIN_FLAGS+=(--descending-MA)
     [ "${INV_AUG:-0}" = "0" ] && TRAIN_FLAGS+=(--no-inv-aug)
+fi
+if [ "${HOST}" = "faster_autoaugment" ]; then
+    FAA_POLICY="${FAA_POLICY:-${WORK_DIR}/faa_search_${DATASET}/final.npz}"
+    [ -f "${FAA_POLICY}" ] || {
+        echo "ERROR: no Faster AutoAugment policy at ${FAA_POLICY}. Search one first" >&2
+        echo "       (bash slurm/submit.sh <name> slurm/faa_search.sbatch ${DATASET}), or set FAA_POLICY." >&2
+        exit 1; }
+    extra+=("host.policy_file=$(cd "$(dirname "${FAA_POLICY}")" && pwd)/$(basename "${FAA_POLICY}")")
 fi
 [ "${#PRUNE_OP_LIST[@]}" -gt 0 ] && TRAIN_FLAGS+=(--pruned-augmentations "${PRUNE_OP_LIST[@]}")
 [ "${PRUNE_RANDOM}" != "0" ] && TRAIN_FLAGS+=(--random-prune-count "${PRUNE_RANDOM}")

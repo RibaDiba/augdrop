@@ -27,17 +27,19 @@ can be switched (``vocab=randaug_default`` with ``--method uniform``); ``check``
 a combination that doesn't fit.
 
 The checkpoint mode. ``--method`` is a ``configs/host`` option (sensaug, randaugment,
-trivialaugment, autoaugment, uniform, or a ``*_diff`` host: trivialaugment_diff,
-randaugment_diff, augmix_diff). It is the probe's choice and need not be how the
+trivialaugment, autoaugment, uniform, madaug, or a ``*_diff`` host: trivialaugment_diff,
+randaugment_diff, autoaugment_diff, augmix_diff, smartsampling_diff). It is the probe's choice and need not be how the
 model was trained: a Sensaug ``none`` or ``augmix`` model is probed with whichever
 method's ops are named. The method's host config gives:
 
 - the ops, its whole vocab: sensaug and uniform the 32 DIFF32 ops, randaugment and
-  trivialaugment 13 each, autoaugment 10, the ``*_diff`` hosts 22 each (R is over all of
-  them)
+  trivialaugment 13 each, autoaugment 10, the ``*_diff`` hosts 22 each, autoaugment_diff 15,
+  smartsampling_diff 13, madaug 16 (R is over all of them)
 - the magnitude, its own (``tasks.magnitudes``): RandAugment's bin M, TrivialAugment's
   uniform bin per image, AutoAugment's policy bins, randaugment_diff its published level
   for ``--dataset``, AugMix a bin uniform on its first 3; sensaug the SA snapshot (below);
+  madaug its policy's level on each probe image, the policy read from the checkpoint
+  (``madaug_policy``; a checkpoint without one, any other method's, gets probe.magnitude);
   uniform, and every method under ``--magnitude-mode fixed``, ``probe.magnitude``
 - the fade, its ``fade:`` block: randaugment's and autoaugment's ops are all faded in,
   trivialaugment's only where there is no derivative (its enhance ops go through their
@@ -327,6 +329,30 @@ def dry_run_report(cfg, ops, fade, faded, fade_at, magnitudes, snapshot_file) ->
     return "\n".join(lines)
 
 
+def policy_levels(host, magnitude_mode, checkpoint, backend, probe_set, data, pcfg):
+    """A policy method's (madaug) own levels on every probe image, from the policy saved
+    in the checkpoint; None for any other method, under ``fixed``, or when the checkpoint
+    holds no policy (then every op is at probe.magnitude, and this says so)."""
+    import sa
+
+    if not hasattr(host, "method_magnitudes") or magnitude_mode == sa.MODE_FIXED:
+        return None
+    from tasks.mmseg.madaug_hooks import policy_from_checkpoint, probe_set_levels
+
+    device = next(backend.model.parameters()).device
+    policy = policy_from_checkpoint(checkpoint, device)
+    if policy is None:
+        print(
+            f"[probe] NOTE: {checkpoint} holds no MADAug policy; every op at "
+            f"probe.magnitude={pcfg.get('magnitude')!r}",
+            file=sys.stderr,
+        )
+        return None
+    return probe_set_levels(
+        backend, policy, probe_set, data.dataset, int(pcfg.get("batch_size", 1)), int(pcfg.get("num_workers", 0))
+    )
+
+
 def run(args) -> int:
     mode = mode_of(args)
     out_dir = os.path.abspath(args.output_dir)
@@ -405,7 +431,8 @@ def run(args) -> int:
     probe_set.save(os.path.join(out_dir, PROBE_SET_FILE))
 
     snapshot, snapshot_iter = sa_snapshot(snapshot_file, ckpt_iter)
-    magnitudes = probe_magnitudes(host, snapshot, magnitude_mode, fallback)
+    levels = policy_levels(host, magnitude_mode, checkpoint, backend, probe_set, data, pcfg)
+    magnitudes = probe_magnitudes(host, snapshot, magnitude_mode, fallback, levels=levels)
     print(
         f"[probe] method {cfg.host.name}: {len(ops)} ops ({len(faded)} faded at a={fade_at:g}), probe set "
         f"{probe_set.digest[:12]} ({len(probe_set)} images of "

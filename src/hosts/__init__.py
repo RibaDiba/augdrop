@@ -7,21 +7,28 @@
 from typing import Iterable
 
 from .augmix import AugMixDiffHost
-from .autoaugment import AutoAugmentHost
+from .autoaugment import AutoAugmentDiffHost, AutoAugmentHost
 from .base import AugHost
+from .faster_autoaugment import FasterAutoAugmentHost
+from .madaug import MADAugHost
 from .prune import PRUNE_FILE, Prune, draw_random_prune, resolve_prune
 from .randaugment import RandAugmentDiffHost, RandAugmentHost
 from .sensaug import SensAugHost
+from .smartsampling import SmartSamplingDiffHost
 from .trivialaugment import TrivialAugmentDiffHost, TrivialAugmentHost
 from .uniform import UniformHost
 
 __all__ = [
     "AugHost",
     "AugMixDiffHost",
+    "AutoAugmentDiffHost",
     "AutoAugmentHost",
+    "FasterAutoAugmentHost",
+    "MADAugHost",
     "RandAugmentDiffHost",
     "RandAugmentHost",
     "SensAugHost",
+    "SmartSamplingDiffHost",
     "TrivialAugmentDiffHost",
     "TrivialAugmentHost",
     "UniformHost",
@@ -42,7 +49,11 @@ HOSTS = {
         TrivialAugmentHost,
         TrivialAugmentDiffHost,
         AutoAugmentHost,
+        AutoAugmentDiffHost,
         AugMixDiffHost,
+        SmartSamplingDiffHost,
+        MADAugHost,
+        FasterAutoAugmentHost,
         UniformHost,
     )
 }

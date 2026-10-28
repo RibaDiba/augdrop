@@ -7,7 +7,7 @@ from vocab.diff_ops import geometric, photometric, rotate_matrix
 
 def test_every_op_is_indexed_once_under_its_family():
     total = sum(len(specs) for specs in FAMILIES.values())
-    assert len(OPS) == total == 127
+    assert len(OPS) == total == 176
     for family, specs in FAMILIES.items():
         for spec in specs:
             assert spec.family == family

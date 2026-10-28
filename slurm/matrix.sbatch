@@ -36,8 +36,10 @@ set -o pipefail
 #
 # Grid (space-separated, env):
 #   BACKBONES="segformer"        configs/task backbones (pspnet, convnext, ...)
-#   HOSTS="sensaug uniform"      the DIFF32 hosts; trivialaugment_diff, randaugment_diff and
-#                                augmix_diff also train, the torchvision hosts don't
+#   HOSTS="sensaug uniform"      the DIFF32 hosts; trivialaugment_diff, randaugment_diff,
+#                                autoaugment_diff, augmix_diff, smartsampling_diff, madaug
+#                                and faster_autoaugment also train, the torchvision hosts
+#                                don't
 #   DATASETS="cityscapes ade20k pascal_voc12 loveda"   the default; potsdam, synapse, a2i2haze
 #                                and acdc also train (every configs/recipe pair is Sensaug's)
 #   SELECTORS="none mrmr random_k kl_reweight qpfs dpp relevance_only"   (nms, the

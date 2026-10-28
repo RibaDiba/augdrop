@@ -7,6 +7,8 @@
     PruneHook            the NMS arm instead (``selection.nms``): R_residual with no
                          statistical gate -> NMS by loss increase -> the pruned set M
                          grows -> ``host.set_weights`` with M zeroed
+    HostProgressHook     before every training step: ``host.set_step``, for a host whose
+                         policy follows training progress (smartsampling_diff's annealed P)
 
 Replaces Sensaug's ``CollectGradientHook`` (grad_hook.py) and
 ``PerturbationSensitivityAnalysisHookWithGradients`` (grad_sens_analysis.py) plus the
@@ -76,7 +78,7 @@ from vocab import get_op
 from ..magnitudes import probe_magnitudes
 from .backend import MMSegBackend, unwrap
 
-__all__ = ["ApplyWeightsHook", "CollectGradientHook", "PruneHook", "host_of"]
+__all__ = ["ApplyWeightsHook", "CollectGradientHook", "HostProgressHook", "PruneHook", "host_of"]
 
 GRADIENT_LOG = "aug_gradient_log.txt"
 PROBE_SET_FILE = "probe_set.json"
@@ -233,6 +235,9 @@ class CollectGradientHook(Hook):
             + (
                 f"the {self.host.name} host's own bins"
                 if self.magnitude_mode != sa.MODE_FIXED and self.host.num_magnitude_bins is not None
+                else f"the {self.host.name} policy's own level on each probe image, else "
+                f"{self.magnitudes.source}/{self.magnitudes.mode}"
+                if self.magnitude_mode != sa.MODE_FIXED and hasattr(self.host, "method_magnitudes")
                 else f"from the SA snapshot once there is one, else "
                 f"{self.magnitudes.source}/{self.magnitudes.mode}"
             ),
@@ -247,7 +252,11 @@ class CollectGradientHook(Hook):
         # Whatever the SA loop published last, read once so the whole sweep is at one
         # set of magnitudes. Empty before the first SA round: the fallback.
         magnitudes = probe_magnitudes(
-            self.host, getattr(runner, "corr_magnitudes", None), self.magnitude_mode, self.magnitudes
+            self.host,
+            getattr(runner, "corr_magnitudes", None),
+            self.magnitude_mode,
+            self.magnitudes,
+            levels=self._policy_levels(runner),
         )
         # A safe point: train_step already ran backward, step and zero_grad, and
         # torch.autograd.grad populates no parameter .grad anyway.
@@ -267,6 +276,19 @@ class CollectGradientHook(Hook):
             fade=self.fade,
             fade_at=self.fade_at,
             skip=self.skip,
+        )
+
+    def _policy_levels(self, runner):
+        """A policy host's (madaug) levels on every probe image, in probe order, from the
+        live policy (``runner.madaug_policy``, MADAugPolicyHook's), on the frozen model the
+        sweep is about to probe. None without a policy, or under ``"fixed"``."""
+        policy = getattr(runner, "madaug_policy", None)
+        if policy is None or self.magnitude_mode == sa.MODE_FIXED or not hasattr(self.host, "method_magnitudes"):
+            return None
+        from .madaug_hooks import probe_set_levels  # it imports this module
+
+        return probe_set_levels(
+            self.backend, policy, self.probe_set, self.data.dataset, self.batch_size, self.num_workers
         )
 
 
@@ -674,3 +696,22 @@ class PruneHook(Hook):
                 logger="current",
                 level=30,
             )
+
+
+@HOOKS.register_module()
+class HostProgressHook(Hook):
+    """Tell a host whose policy changes over training which step is about to run:
+    ``host.set_step(runner.iter + 1)`` in ``before_train_iter``, so the preprocessor's
+    draws for that step see it. ``runner.iter`` is restored on resume and identical on
+    every rank. ``config.py`` adds this hook only for a host with ``set_step``
+    (smartsampling_diff, whose P(augment) is annealed from 0 to 1)."""
+
+    priority = "VERY_HIGH"
+
+    def before_run(self, runner) -> None:
+        self.host = host_of(runner)
+        if not hasattr(self.host, "set_step"):
+            raise TypeError(f"host {self.host.name!r} has no set_step; HostProgressHook has nothing to drive")
+
+    def before_train_iter(self, runner, batch_idx, data_batch=None) -> None:
+        self.host.set_step(runner.iter + 1)

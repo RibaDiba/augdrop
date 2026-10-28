@@ -18,7 +18,10 @@ dataset) is the base, and the builder fills in everything the yaml groups own:
                ``custom_hooks``: ``CollectGradientHook`` (NORMAL) and
                ``ApplyWeightsHook`` (LOW), the priorities their classes carry, or
                ``PruneHook`` (LOW) for selector nms. The host's ``fade:`` block goes
-               to CollectGradientHook's ``fade`` / ``fade_at``
+               to CollectGradientHook's ``fade`` / ``fade_at``. A host with ``set_step``
+               (smartsampling_diff, madaug) also gets ``HostProgressHook`` (VERY_HIGH), and
+               a host with a ``policy:`` block (madaug) ``MADAugPolicyHook`` (ABOVE_NORMAL)
+               with its keys, unless augment is off
     sa/        host=sensaug only: ``RobustIterBasedTrainLoop`` / ``RobustValLoop`` /
                ``SubsetTestLoop``. Any other host keeps mmengine's stock loops
     task/      max_iters, val and checkpoint intervals, AMP, ``cfg_options`` (dotted
@@ -79,7 +82,7 @@ import copy
 import os
 from typing import Any, Optional
 
-from dropaug.config import CONFIG_DIR, fade_of, host_kwargs, prune_of, selector_spec, to_python
+from dropaug.config import CONFIG_DIR, fade_of, host_kwargs, policy_of, prune_of, selector_spec, to_python
 
 __all__ = ["build", "localize_pretrained_checkpoint"]
 
@@ -342,7 +345,15 @@ def build(cfg, work_dir: str, *, launcher: str = "none", resume: bool = False):
             lambda_ramp=selector["lambda_ramp"],
             **apply_kwargs,
         )
-    out.custom_hooks = list(out.get("custom_hooks") or []) + [
+    from hosts import HOSTS
+
+    # A host whose policy follows training progress is told the step before each one.
+    progress = [dict(type="HostProgressHook")] if hasattr(HOSTS[host_name], "set_step") else []
+    # A host whose draws come from a policy network trains it before each step.
+    policy = policy_of(cfg)
+    if policy is not None and cfg.augment:
+        progress.append(dict(type="MADAugPolicyHook", **policy))
+    out.custom_hooks = list(out.get("custom_hooks") or []) + progress + [
         dict(type="CollectGradientHook", **collect),
         weights,
     ]

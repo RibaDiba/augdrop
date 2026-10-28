@@ -57,7 +57,8 @@ def magnitude_bins(name: str, num_bins: int) -> Tuple[Tuple[float, ...], bool]:
     ``identity_at``) with p = 0.5. torchvision's own table; only the torchvision
     families and the split ``*_diff`` families (whose ops are unsigned) have one.
     ``randaug_diff`` past 31 bins continues torchvision's grid beyond Table 6's ranges
-    (its module docstring)."""
+    (its module docstring). ``smartaug_diff`` has no torchvision method: its bins are
+    SmartAugment's 0-30 levels, reconstructed (its module docstring)."""
     get_op(name)
     if name not in BINS:
         raise KeyError(

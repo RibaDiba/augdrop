@@ -58,6 +58,8 @@ __all__ = [
     "host_of",
     "load",
     "magnitudes_of",
+    "policy_of",
+    "search_of",
     "prune_of",
     "prune_tag",
     "run_name",
@@ -235,6 +237,8 @@ def host_kwargs(cfg: DictConfig, prune=None) -> dict:
     kwargs = to_python(cfg.host)
     kwargs.pop("vocab", None)  # the vocab is passed as `vocabulary`, never as a host key
     kwargs.pop("fade", None)  # the probe's, not the host's: see fade_of
+    kwargs.pop("policy", None)  # the policy hook's, not the host's: see policy_of
+    kwargs.pop("search", None)  # Faster AutoAugment's search, not the host's: see search_of
     name = kwargs.pop("name")
     if _takes_vocabulary(name):
         kwargs["vocabulary"] = list(vocab_of(cfg))
@@ -311,6 +315,20 @@ def fade_of(cfg: DictConfig) -> tuple:
     return block.get("ops"), float(block.get("at", 1.0))
 
 
+def policy_of(cfg: DictConfig) -> Optional[dict]:
+    """The host's ``policy:`` block (MADAug's policy training, MADAugPolicyHook's
+    kwargs), or None for a host without one."""
+    block = to_python(cfg.host.get("policy"))
+    return None if block is None else dict(block)
+
+
+def search_of(cfg: DictConfig) -> Optional[dict]:
+    """The host's ``search:`` block (Faster AutoAugment's policy search,
+    scripts/faa_search.py), or None for a host without one."""
+    block = to_python(cfg.host.get("search"))
+    return None if block is None else dict(block)
+
+
 def selector_spec(cfg: DictConfig) -> dict:
     """ApplyWeightsHook's ``selector`` dict (``type``, target ``lam``, the selector's
     own kwargs) plus ``lambda_ramp``, which the hook takes separately."""
@@ -381,7 +399,7 @@ def check(cfg: DictConfig, *, training: bool) -> List[str]:
         try:
             ops = vocab_of(cfg)
             host = host_of(cfg, pruning)
-        except (KeyError, ValueError, TypeError) as error:
+        except (KeyError, ValueError, TypeError, OSError) as error:
             errors.append(f"host {name!r} with vocab {choices.get('vocab')!r}: {error}")
         else:
             if tuple(ops) != tuple(host.vocabulary()):
@@ -462,13 +480,24 @@ def check(cfg: DictConfig, *, training: bool) -> List[str]:
                 check_trainable(host, vocab_of(cfg))
             except NotImplementedError as error:
                 errors.append(f"{error} (set augment=false to train clean and probe anyway)")
+            policy = policy_of(cfg)
+            if policy is not None:
+                import madaug
+
+                if backend != "mmseg":
+                    errors.append(
+                        f"host {name!r} trains its policy with MADAugPolicyHook, which is mmseg's; "
+                        f"task {choices.get('task')!r} is {backend} (set augment=false to probe only)"
+                    )
+                if policy.get("hypergrad", "exact") not in madaug.MODES:
+                    errors.append(f"host.policy.hypergrad must be one of {madaug.MODES}, got {policy['hypergrad']!r}")
         max_iters = int(cfg.task.max_iters)
         if not any(host.should_probe(i) for i in range(1, max_iters + 1)):
             warnings.append(
                 f"host {name!r} never probes within {max_iters} iterations: no R, and the "
                 f"selector never runs. Set probe.schedule.interval or probe.schedule.iters."
             )
-        if selector_name == "relevance_only" and name != "sensaug":
+        if selector_name == "relevance_only" and name not in ("sensaug", "smartsampling_diff"):
             warnings.append(
                 f"relevance_only ranks by the host's prior, and host {name!r} has a flat one: it "
                 "will decline at every probe"

@@ -1,12 +1,14 @@
-"""GPU smoke test of the randaugment_diff and augmix_diff pipelines (slurm/test.sbatch).
+"""GPU smoke test of the randaugment_diff, augmix_diff and smartsampling_diff pipelines
+(slurm/test.sbatch).
 
 For each host: build its vocab and host as configs/host/<host>.yaml does, augment a
 batch through ``tasks.augment.augment_batch`` on the GPU (what the mmseg preprocessor
 calls), then probe every op on a toy eval-mode model through ``probe.collect_grads`` at
 the magnitudes the host's own ``draw_bins`` give, faded as the yaml fades. Checks shapes,
 the [0, 1] range, finite output, and a finite G row for every probed op. A segmentation
-label goes through the geometric ops of randaugment_diff (it must move) and is left
-alone by augmix_diff (as in Sensaug).
+label goes through the geometric ops of randaugment_diff and smartsampling_diff (it must
+move) and is left alone by augmix_diff (as in Sensaug). smartsampling_diff is run at its
+last step, where every image is augmented.
 
     python scripts/smoke_diff_hosts.py [--batch 8] [--size 96] [--seed 0]
 """
@@ -30,8 +32,10 @@ from vocab import build_vocab, magnitude_bins  # noqa: E402
 FADED = ("Solarize", "Posterize", "AutoContrast", "Equalize")
 
 HOSTS = {
-    "randaugment_diff": dict(family="randaug_diff", kwargs=dict(dataset="cifar10")),
-    "augmix_diff": dict(family="augmix_diff", kwargs={}),
+    "randaugment_diff": dict(family="randaug_diff", kwargs=dict(dataset="cifar10"), fade=FADED),
+    "augmix_diff": dict(family="augmix_diff", kwargs={}, fade=FADED),
+    # configs/host/smartsampling_diff.yaml fades AutoContrast, its one op with no magnitude.
+    "smartsampling_diff": dict(family="smartaug_diff", kwargs=dict(max_iters=1000), fade=("AutoContrast",)),
 }
 
 
@@ -67,6 +71,8 @@ def smoke(name, spec, args, device):
     check(set(host.vocabulary()) <= set(vocab), f"{name}: host ops missing from the vocab")
     ops = {n: vocab[n] for n in host.vocabulary()}
     check_trainable(host, ops)
+    if hasattr(host, "set_step"):
+        host.set_step(host.max_iters)
     print(f"[{name}] {len(ops)} ops, num_magnitude_bins={host.num_magnitude_bins}", flush=True)
 
     g = torch.Generator(device="cpu").manual_seed(args.seed)
@@ -95,7 +101,7 @@ def smoke(name, spec, args, device):
             continue
         values, signed = magnitude_bins(op_name, host.num_magnitude_bins)
         magnitudes[op_name] = np.asarray([values[int(b)] for b in bins[op_name]], dtype=np.float64)
-    fade = [f"{spec['family']}.{o}" for o in FADED]
+    fade = [f"{spec['family']}.{o}" for o in spec["fade"]]
     methods = resolve_methods(ops, fade)
     batch = {"image": images, "target": torch.randint(0, 5, (args.batch,), generator=g).to(device)}
     rows = collect_grads(Adapter(model), batch, ops, magnitudes, methods=methods, check=True)

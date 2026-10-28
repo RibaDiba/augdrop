@@ -38,7 +38,8 @@ seed: 0
 work_dir: null
 # false builds the host (the probe reads its schedule and vocabulary) but trains on
 # clean images: Sensaug's control. Only the DIFF32 ops on the sensaug and uniform hosts,
-# and the *_diff hosts (trivialaugment_diff, randaugment_diff, augmix_diff), can augment
+# and the *_diff hosts (trivialaugment_diff, randaugment_diff, augmix_diff,
+# smartsampling_diff), can augment
 # training; any other host needs augment=false.
 augment: true
 resume: false              # continue the run in work_dir (train.py --resume)

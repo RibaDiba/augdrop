@@ -40,7 +40,7 @@ from probe import ProbeError
 
 from ..base import ProbeData, TaskBackend
 
-__all__ = ["MMSegBackend", "unwrap"]
+__all__ = ["MMSegBackend", "functional_logits", "pooled_features", "unwrap"]
 
 #: Pipeline transforms that are not random by name but still are. Anything with
 #: "Random" in its type is refused too.
@@ -52,6 +52,25 @@ _RANDOM_TRANSFORMS = frozenset(
 def unwrap(model: torch.nn.Module) -> torch.nn.Module:
     """The segmentor itself, through DDP if present."""
     return model.module if hasattr(model, "module") else model
+
+
+def pooled_features(model: torch.nn.Module, inputs: torch.Tensor) -> torch.Tensor:
+    """(B, C): the segmentor's deepest ``extract_feat`` output (backbone, and neck if it
+    has one), average-pooled, for normalized ``inputs``. MADAug's policy reads a
+    classifier's penultimate feature; this is a segmentor's nearest."""
+    feats = unwrap(model).extract_feat(inputs)
+    if isinstance(feats, (list, tuple)):
+        feats = feats[-1]
+    return feats.mean(dim=(-2, -1)) if feats.dim() == 4 else feats.flatten(1)
+
+
+def functional_logits(model: torch.nn.Module, weights: dict, inputs: torch.Tensor, size) -> torch.Tensor:
+    """The decode head's logits for normalized ``inputs`` with the segmentor's parameters
+    replaced by ``weights`` (``torch.func.functional_call``, ``mode="tensor"``), resized to
+    ``size`` the way mmseg's loss resizes them: (B, K, *size)."""
+    model = unwrap(model)
+    logits = torch.func.functional_call(model, weights, (inputs,), {"mode": "tensor"})
+    return F.interpolate(logits, size=tuple(size), mode="bilinear", align_corners=getattr(model, "align_corners", False))
 
 
 class MMSegBackend(TaskBackend):
@@ -213,6 +232,23 @@ class MMSegBackend(TaskBackend):
                 "reach the corruption in mmcv's BGR order"
             )
         return _CorruptedItems(dataset, corrupt_image)
+
+    # --- MADAug's policy (tasks/mmseg/madaug.py) -------------------------------------
+
+    def features(self, images01: torch.Tensor) -> torch.Tensor:
+        """The policy's input for [0, 1] images: ``pooled_features`` of the model."""
+        return pooled_features(self.model, self._normalize(images01))
+
+    def functional_loss(self, weights: dict, batch) -> torch.Tensor:
+        """``model.loss`` on the clean ``batch`` with the segmentor's parameters replaced
+        by ``weights`` (``torch.func.functional_call``), summed over its ``loss*`` entries:
+        the validation loss MADAug's policy update takes at the virtual weights."""
+        images01, _ = self.to_unit(batch)
+        samples = self._samples(batch)
+        losses = torch.func.functional_call(
+            self.model, weights, (self._normalize(images01), samples), {"mode": "loss"}
+        )
+        return _total_loss(losses)
 
     # --- helpers -----------------------------------------------------------------
 

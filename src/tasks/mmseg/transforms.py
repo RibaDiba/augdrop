@@ -29,6 +29,18 @@ with the cls loop):
   N draws per image applied in turn
 - an ``augmix_diff`` host: AugMix as Sensaug ran it over ``augmix_diff``, chains mixed
   with the clean image, the mask left as it was (Sensaug's behaviour)
+- a ``smartsampling_diff`` host: SmartSamplingAugment over ``smartaug_diff``, 2 distinct
+  ops at one level with P annealed by the step (``host.draw_slots``; HostProgressHook
+  sets the step)
+- an ``autoaugment_diff`` host: AutoAugment's ImageNet policy over ``randaug_diff`` (and
+  ``autoaugment.Invert``), a sub-policy per image and its two steps (``host.draw_slots``)
+- a ``madaug`` host (``POLICY_HOSTS``): MADAug's ops at its policy's per-image draws, which
+  depend on the model, so ``MADAugTrainLoop`` computes them and installs them before
+  each step (``set_policy_slots``); this applies them (``apply_slots``) and raises if a
+  training batch arrives without them
+- a ``faster_autoaugment`` host (``STAGE_HOSTS``): Faster AutoAugment's searched policy over
+  ``faster_aa``, a sub-policy per image and its stages applied in turn
+  (``host.draw_stages``); the policy file comes from scripts/faa_search.py
 
 The torchvision methods (RandAugment, TrivialAugment, AutoAugment) are refused
 (``check_trainable``): they train through those ``*_diff`` hosts.
@@ -55,7 +67,7 @@ from mmseg.registry import MODELS
 from hosts import build_host
 from vocab import get_op
 
-from ..augment import NO_OP, apply_draws, augment_batch, check_trainable, sample_draws
+from ..augment import NO_OP, POLICY_HOSTS, apply_draws, apply_slots, augment_batch, check_trainable, sample_draws
 
 __all__ = ["GpuAugSegDataPreProcessor", "NO_OP", "apply_draws", "augment_batch", "sample_draws"]
 
@@ -79,6 +91,7 @@ class GpuAugSegDataPreProcessor(SegDataPreProcessor):
             check_trainable(self.host, self.ops)
         self._suspended = False
         self._eval_spec: Optional[Tuple[str, float]] = None
+        self._policy_slots = None
 
     @contextlib.contextmanager
     def suspended(self):
@@ -102,6 +115,11 @@ class GpuAugSegDataPreProcessor(SegDataPreProcessor):
         """Clean images on the eval path again."""
         self._eval_spec = None
 
+    def set_policy_slots(self, slots) -> None:
+        """A ``POLICY_HOSTS`` host's draws for the next training batch: slots of per-image
+        ``(op, magnitude)`` (``MADAugHost.draw``). Used once, by that batch."""
+        self._policy_slots = slots
+
     def forward(self, data: dict, training: bool = False) -> dict:
         data = super().forward(data, training)
         if self._suspended:
@@ -111,6 +129,13 @@ class GpuAugSegDataPreProcessor(SegDataPreProcessor):
             if not self.augment:
                 return data
             draws = None  # the host's whole policy: augment_batch
+            if self.host.name in POLICY_HOSTS:
+                if self._policy_slots is None:
+                    raise RuntimeError(
+                        f"host {self.host.name!r} trains on its policy's draws, and none were "
+                        f"installed for this batch; train it with its loop (MADAugTrainLoop)"
+                    )
+                draws, self._policy_slots = self._policy_slots, None
         else:
             if self._eval_spec is None or self._eval_spec[0] == NO_OP:
                 return data
@@ -127,6 +152,8 @@ class GpuAugSegDataPreProcessor(SegDataPreProcessor):
             labels = _gather_labels(samples)
             if draws is None:
                 rgb01, labels = augment_batch(self.host, rgb01, labels, self.ops)
+            elif training:
+                rgb01, labels = apply_slots(rgb01, labels, draws, self.ops)
             else:
                 rgb01, labels = apply_draws(rgb01, labels, draws, self.ops)
             data["inputs"] = (rgb01 * 255.0 - mean) / std

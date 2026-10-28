@@ -6,7 +6,16 @@
   trivialaugment, autoaugment): each op at a magnitude the method itself would apply it
   at. RandAugment's bin M for every image, TrivialAugment's uniform bin per image,
   AutoAugment's bins from its policy, signed ops negated at random, read through
-  torchvision's own table (``vocab.magnitude_bins``).
+  torchvision's own table (``vocab.magnitude_bins``). The ``*_diff`` hosts too
+  (smartsampling_diff: one level per image on 5..30, through smartaug_diff's levels).
+- a host whose magnitudes come from a policy network (``madaug``): the policy's own
+  level for each probe image (``levels``, ``madaug.policy_levels`` over the probe set in
+  probe order, which the caller computes with the live policy), perturbed and signed as
+  the method draws them (``MADAugHost.method_magnitudes``). Without levels (no policy:
+  augment=false, or a checkpoint that holds none) the configured magnitude.
+- a host with a searched policy (``draw_magnitudes``: faster_autoaugment): per image, one
+  of the magnitudes the searched policy applies each op at, weighted by how often it
+  does, in the op's units (``FasterAutoAugmentHost.draw_magnitudes``).
 - otherwise (``uniform``), and always with ``magnitude_mode="fixed"``: the configured
   magnitude.
 
@@ -22,7 +31,7 @@ import probe
 import sa
 from vocab import magnitude_bins
 
-__all__ = ["METHOD_SOURCE", "method_magnitudes", "probe_magnitudes"]
+__all__ = ["METHOD_SOURCE", "drawn_magnitudes", "method_magnitudes", "policy_magnitudes", "probe_magnitudes"]
 
 #: ``Magnitudes.source`` of a draw from the host's own policy; its mode is the host.
 METHOD_SOURCE = "method"
@@ -65,16 +74,76 @@ def method_magnitudes(host, fallback: probe.Magnitudes) -> probe.Magnitudes:
     return probe.Magnitudes(draw=draw, source=METHOD_SOURCE, mode=host.name)
 
 
+def policy_magnitudes(host, levels, fallback: probe.Magnitudes) -> probe.Magnitudes:
+    """``probe.Magnitudes`` from a policy host's per-image ``levels`` ((N, outputs), one
+    row per probe image, in probe order): each batch takes the next rows, as the sweep
+    draws once per batch in probe order, and ``host.method_magnitudes`` turns them into
+    the ops' magnitudes with the sweep's generator. One instance serves one sweep: drawing
+    past the last row raises. ``fallback`` covers an op the host leaves out."""
+    levels = np.asarray(levels, dtype=np.float64)
+    taken = [0]
+
+    def draw(ops, batch_size, rng):
+        start = taken[0]
+        if start + batch_size > len(levels):
+            raise ValueError(
+                f"the policy's levels cover {len(levels)} probe images; batch at {start} asks "
+                f"for {batch_size} more. Compute them over the sweep's whole probe set"
+            )
+        taken[0] = start + batch_size
+        drawn = host.method_magnitudes(levels[start : start + batch_size], rng)
+        out, missing = {}, {}
+        for name, op in ops.items():
+            if op.mag_range is None:
+                continue
+            if name in drawn:
+                out[name] = drawn[name]
+            else:
+                missing[name] = op
+        if missing:
+            out.update(fallback.draw(missing, batch_size, rng))
+        return out
+
+    return probe.Magnitudes(draw=draw, source=METHOD_SOURCE, mode=host.name)
+
+
+def drawn_magnitudes(host, fallback: probe.Magnitudes) -> probe.Magnitudes:
+    """``probe.Magnitudes`` drawn from ``host.draw_magnitudes`` (op-unit magnitudes per
+    image), per batch, with the sweep's generator. ``fallback`` covers any op with a
+    magnitude the host's draw leaves out."""
+
+    def draw(ops, batch_size, rng):
+        drawn = host.draw_magnitudes(batch_size, rng)
+        out, missing = {}, {}
+        for name, op in ops.items():
+            if op.mag_range is None:
+                continue
+            if name in drawn:
+                out[name] = np.asarray(drawn[name], dtype=np.float64)
+            else:
+                missing[name] = op
+        if missing:
+            out.update(fallback.draw(missing, batch_size, rng))
+        return out
+
+    return probe.Magnitudes(draw=draw, source=METHOD_SOURCE, mode=host.name)
+
+
 def probe_magnitudes(
-    host, snapshot: Optional[Mapping], mode: str, fallback: probe.Magnitudes
+    host, snapshot: Optional[Mapping], mode: str, fallback: probe.Magnitudes, levels=None
 ) -> probe.Magnitudes:
     """One sweep's magnitudes for ``host`` (see the module docstring). ``snapshot`` is
     the SA loop's ``corr_magnitudes`` (empty or None without one), ``mode`` the probe's
-    ``magnitude_mode`` and ``fallback`` its configured magnitude."""
+    ``magnitude_mode``, ``fallback`` its configured magnitude, and ``levels`` a policy
+    host's levels over the probe set (None without a policy)."""
     if mode not in sa.MAGNITUDE_MODES:
         raise ValueError(f"unknown magnitude mode {mode!r}, expected one of {sa.MAGNITUDE_MODES}")
     if mode == sa.MODE_FIXED:
         return fallback
+    if hasattr(host, "method_magnitudes"):
+        return fallback if levels is None else policy_magnitudes(host, levels, fallback)
+    if hasattr(host, "draw_magnitudes"):
+        return drawn_magnitudes(host, fallback)
     if getattr(host, "num_magnitude_bins", None) is not None:
         return method_magnitudes(host, fallback)
     return sa.probe_magnitudes(snapshot or {}, mode, fallback)

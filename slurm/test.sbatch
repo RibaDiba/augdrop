@@ -22,7 +22,7 @@
 set -o pipefail
 
 # ==========================================================================
-# test.sbatch -- 1-GPU check of the *_diff hosts.
+# test.sbatch -- 1-GPU check of the *_diff hosts and faster_autoaugment (search, draws, probe).
 #
 #   bash slurm/submit.sh <name> slurm/test.sbatch
 #
@@ -44,4 +44,6 @@ echo "== pytest"
 python -m pytest ${PYTEST_ARGS:-tests/vocab tests/hosts tests/tasks tests/probe tests/config} -x -q || rc=1
 echo "== smoke"
 python scripts/smoke_diff_hosts.py || rc=1
+echo "== smoke: faster_autoaugment"
+python scripts/smoke_faster_autoaugment.py || rc=1
 exit ${rc}

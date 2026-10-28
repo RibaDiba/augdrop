@@ -4,10 +4,13 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+import yaml
 
 from hosts import HOSTS, AugHost, build_host
 from hosts.augmix import AugMixDiffHost
-from hosts.autoaugment import IMAGENET_POLICY, AutoAugmentHost, vocab_name
+from hosts.autoaugment import IMAGENET_POLICY, AutoAugmentDiffHost, AutoAugmentHost, vocab_name
+from hosts.faster_autoaugment import FasterAutoAugmentHost
+from hosts.madaug import MADAugHost
 from hosts.randaugment import (
     IDENTITY,
     OP_ORDER,
@@ -24,10 +27,15 @@ from hosts.sensaug import (
     derive_corr_rounds,
     round_fire_iters,
 )
+from hosts.smartsampling import SmartSamplingDiffHost
 from hosts.trivialaugment import TrivialAugmentDiffHost, TrivialAugmentHost
 from hosts.uniform import UniformHost
 
 SENSAUG_ROOT = Path(__file__).resolve().parents[2] / "third_party" / "Sensaug"
+# The vocab configs/host/smartsampling_diff.yaml names (an op list, not a family).
+SMARTSAMPLING_VOCAB = yaml.safe_load(
+    (Path(__file__).resolve().parents[2] / "configs" / "vocab" / "smartsampling_diff.yaml").read_text()
+)
 
 # One instance of every host, each with a schedule so construction is exercised.
 FACTORIES = {
@@ -37,7 +45,11 @@ FACTORIES = {
     "trivialaugment_diff": lambda: TrivialAugmentDiffHost(probe_interval=1000),
     "randaugment_diff": lambda: RandAugmentDiffHost(dataset="cityscapes", probe_interval=1000),
     "augmix_diff": lambda: AugMixDiffHost(probe_interval=1000),
+    "smartsampling_diff": lambda: SmartSamplingDiffHost(max_iters=20000, probe_interval=1000),
     "autoaugment": lambda: AutoAugmentHost(probe_interval=1000),
+    "autoaugment_diff": lambda: AutoAugmentDiffHost(probe_interval=1000),
+    "madaug": lambda: MADAugHost(max_iters=20000, probe_interval=1000),
+    "faster_autoaugment": lambda: FasterAutoAugmentHost(probe_interval=1000),
     "uniform": lambda: UniformHost(probe_interval=1000),
 }
 
@@ -207,6 +219,7 @@ def test_vocabulary_is_a_vocab(name):
         (TrivialAugmentDiffHost, {"families": ["trivialaug_diff"]}),
         (lambda: RandAugmentDiffHost(dataset="cifar10"), {"families": ["randaug_diff"]}),
         (AugMixDiffHost, {"families": ["augmix_diff"]}),
+        (lambda: SmartSamplingDiffHost(max_iters=20000), SMARTSAMPLING_VOCAB),
     ],
 )
 def test_vocabulary_order_is_vocab_order(host, config):
