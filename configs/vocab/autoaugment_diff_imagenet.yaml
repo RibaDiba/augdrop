@@ -1,0 +1,21 @@
+# The 15 ops AutoAugment's ImageNet policy applies, made differentiable, in
+# AutoAugmentDiffHost's order: randaug_diff's (AutoAugment shares RandAugment's ranges and
+# bin formulas; read at 10 bins), each signed op split into _pos/_neg, plus Invert, which
+# RandAugment dropped.
+ops:
+  - randaug_diff.AutoContrast
+  - randaug_diff.Equalize
+  - randaug_diff.Rotate_pos
+  - randaug_diff.Rotate_neg
+  - randaug_diff.Solarize
+  - randaug_diff.Color_pos
+  - randaug_diff.Color_neg
+  - randaug_diff.Posterize
+  - randaug_diff.Contrast_pos
+  - randaug_diff.Contrast_neg
+  - randaug_diff.Sharpness_pos
+  - randaug_diff.Sharpness_neg
+  - randaug_diff.ShearX_pos
+  - randaug_diff.ShearX_neg
+  - autoaugment.Invert
+exclude: []

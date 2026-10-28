@@ -1,0 +1,24 @@
+# AutoAugment's ImageNet policy (torchvision's, src/hosts/autoaugment.py IMAGENET_POLICY)
+# over its ops made differentiable (vocab randaug_diff, read at AutoAugment's 10 bins, plus
+# autoaugment.Invert). The policy is published, not searched here. Per image one of the 25
+# sub-policies, then each of its two steps with its probability at its bin; the 5 signed
+# ops are split into _pos/_neg, half of a step each. q tilts the sub-policies and, within a
+# step, the two directions. Trainable: the mmseg preprocessor applies these ops on GPU.
+defaults:
+  - override /vocab@_global_.vocab: autoaugment_diff_imagenet
+
+name: autoaugment_diff
+probe_interval: ${probe.schedule.interval}
+probe_iters: ${probe.schedule.iters}
+control_iters: ${probe.schedule.control_iters}
+# The 10 split ops go through autograd. The five with no derivative in their magnitude
+# are torchvision's own and are faded in (probe/fade.py), as in randaugment_diff.yaml,
+# plus Invert, which has no magnitude.
+fade:
+  ops:
+    - randaug_diff.Solarize
+    - randaug_diff.Posterize
+    - randaug_diff.AutoContrast
+    - randaug_diff.Equalize
+    - autoaugment.Invert
+  at: 1.0
