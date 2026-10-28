@@ -1,5 +1,77 @@
 # Changelog
 
+## 2026-10-26: AutoAugment trains (`autoaugment_diff`)
+
+Goal: AutoAugment as a method that trains on mmseg and is probed at its own magnitudes,
+as RandAugment and TrivialAugment already do through their `*_diff` hosts. The policy is
+torchvision's published ImageNet one (`IMAGENET_POLICY`); AutoAugment's search (thousands
+of GPU-hours) is not run.
+
+### Changes
+
+- **Host:** `hosts/autoaugment.py`, `AutoAugmentDiffHost` over `randaug_diff` (no new vocab
+  family: torchvision's AutoAugment and RandAugment `_AUGMENTATION_SPACE` share their
+  formulas, so `randaug_diff` at 10 bins is AutoAugment's magnitudes) plus
+  `autoaugment.Invert`, 15 ops. A signed op's step chooses between `_pos` / `_neg`; q tilts
+  the sub-policies and, within a step, the direction (CLAUDE.md's hosts table).
+  `AutoAugmentHost` now builds its steps through `_columns` (one column per op), which
+  leaves its behaviour unchanged (its tests pass as they were).
+- **Wiring:** `tasks.augment.BIN_HOSTS` / `SLOT_HOSTS` (`draw_slots`);
+  `configs/host/autoaugment_diff.yaml` (fades Solarize, Posterize, AutoContrast, Equalize,
+  Invert), `configs/vocab/autoaugment_diff_imagenet.yaml`.
+- **Tests:** `tests/hosts/test_hosts.py` FACTORIES only. Not run on mmseg or a GPU; not in
+  `scripts/smoke_diff_hosts.py` (it builds one family per host).
+
+## 2026-10-25: Faster AutoAugment
+
+Goal: Faster AutoAugment (Hataya et al., ECCV 2020) as a method that searches its policy
+on a segmentation dataset, trains on it, and is probed at its own magnitudes. The paper
+and its code (moskomule/dda) are classification-only and publish no policy; the
+segmentation search, and where it departs from both, is in CLAUDE.md's
+`src/hosts/faster_autoaugment/`.
+
+### Changes
+
+- **Vocab:** `faster_aa` family, the paper's 17 ops in dda's units with the 9 signed ones
+  split into `_pos` / `_neg` (26); `configs/vocab/faster_aa.yaml`. `OpSpec.couples_images`
+  (SamplePairing): `unprobed` in the probe, skipped by the audit's per-image checks, and
+  applied over the whole batch in training (`tasks.augment.apply_draws`).
+- **Host and search:** `hosts/faster_autoaugment/`: `FasterAutoAugmentHost` (numpy) reads
+  a searched policy; `policy.py` / `search.py` (torch) are dda's policy and WGAN-GP search
+  with a soft-mask segmentation loss. `configs/host/faster_autoaugment.yaml` (`policy_file`,
+  `fade:`, `search:`).
+- **Wiring:** `tasks.augment.STAGE_HOSTS` / `stages`; `tasks.magnitudes.drawn_magnitudes`;
+  `dropaug.config.search_of` (`host_kwargs` pops `search:`; `check` reports a missing
+  policy file). `scripts/faa_search.py`, `slurm/faa_search.sbatch`; `train.sbatch`'s
+  `FAA_POLICY` (default `<WORK_DIR>/faa_search_<dataset>/final.npz`).
+- **Tests:** pin tables only (`tests/hosts/test_hosts.py` FACTORIES, the registry's op
+  count, `tests/probe/test_vocab_ops.py`'s expected methods).
+
+## 2026-10-25: MADAug
+
+Goal: MADAug (Hou, Zhang & Zhou, ICCV 2023) as a method that trains on mmseg and is
+probed at its own magnitudes. MADAug is classification-only; the segmentation port, and
+where it departs from the paper and the released code, is in CLAUDE.md's `src/madaug/`.
+
+### Changes
+
+- **Vocab:** `madaug` family (`Cutout`, `Flip`); `configs/vocab/madaug.yaml`, MADAug's 16
+  ops, 14 of them `randaug_default`'s and `autoaugment.Invert`.
+- **Host:** `hosts/madaug.py`, `MADAugHost`: the tanh curriculum, k = 2 draws from the
+  policy's per-image p, δ = 0.3, random signs, MADAug's level ranges in the vocab ops'
+  units, q as a per-image tilt with p(Identity) held.
+- **`src/madaug/`** (new): the policy network, the relaxed batch with blended labels, the
+  exact (Hessian-vector) or finite-difference hypergradient, `policy_step` / `exploit`.
+- **mmseg:** `MADAugPolicyHook` (`tasks/mmseg/madaug_hooks.py`) updates the policy every
+  `search_freq` steps on a val batch and installs the step's draws on
+  `GpuAugSegDataPreProcessor` (`set_policy_slots`, `tasks.augment.apply_slots`,
+  `POLICY_HOSTS`). The policy is saved in checkpoints (`madaug_policy`).
+  `CollectGradientHook` and `scripts/probe.py` probe at the policy's level on each probe
+  image (`tasks.magnitudes.policy_magnitudes`). `configs/host/madaug.yaml`, with a
+  `policy:` block (`dropaug.config.policy_of`).
+- Not run on mmseg yet: checked on stand-ins for mmengine and mmseg. No new tests; the
+  host, op and vocab tables in `tests/` list the new names.
+
 ## 2026-10-19: Slurm job cap
 
 Goal: everything this repo sends to Slurm is at most one A6000 job or two A5000 jobs in
