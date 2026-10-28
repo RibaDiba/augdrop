@@ -621,8 +621,10 @@ class PruneHook(Hook):
 
     def reweight(self, runner) -> None:
         """M on the pdf the SA loop just installed. With M empty, or a pdf that gives
-        none of M any mass, the pdf trains as generated (the host's q is cleared)."""
-        if not self.pruned:
+        none of M any mass, the pdf trains as generated (the host's q is cleared).
+        RobustValLoop leaves M out of the pdf itself, so the second is the usual case."""
+        prior = dict(zip(self.host.vocabulary(), self.host.base_probs()))
+        if not any(prior.get(op, 0) > 0 for op in self.pruned):
             self.host.clear_weights()
             return
         self._install(f"SA round at iter {runner.iter}", clear_on_decline=True)

@@ -45,8 +45,9 @@ import contextlib
 from typing import Optional, Tuple
 
 import torch
+from mmcv.transforms import BaseTransform
 from mmseg.models.data_preprocessor import SegDataPreProcessor
-from mmseg.registry import MODELS
+from mmseg.registry import MODELS, TRANSFORMS
 
 from hosts import build_host
 from vocab import get_op
@@ -54,6 +55,25 @@ from vocab import get_op
 from ..augment import NO_OP, apply_draws, check_trainable, sample_draws
 
 __all__ = ["GpuAugSegDataPreProcessor", "NO_OP", "apply_draws", "sample_draws"]
+
+
+@TRANSFORMS.register_module()
+class BinarizeLabel(BaseTransform):
+    """``gt_seg_map`` > ``threshold`` becomes 1, the rest 0 (after ``LoadAnnotations``).
+
+    For masks stored as 0/255 (ISIC 2017): mmseg reads 255 as the ignore label, so they
+    would train with no foreground class. The files stay as downloaded."""
+
+    def __init__(self, threshold: int = 127):
+        self.threshold = threshold
+
+    def transform(self, results: dict) -> dict:
+        seg = results["gt_seg_map"]
+        results["gt_seg_map"] = (seg > self.threshold).astype(seg.dtype)
+        return results
+
+    def __repr__(self) -> str:
+        return f"{self.__class__.__name__}(threshold={self.threshold})"
 
 
 @MODELS.register_module()

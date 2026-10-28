@@ -1,0 +1,30 @@
+# CVC-300 (60 images), PraNet's zero-shot polyp test set: a domain-shift TEST set for models
+# trained on `polyp`, never trained on (scripts/eval.py --dataset polyp_cvc300). Written by
+# scripts/prepare_polyp.py:
+#   <data_root>/img_dir/val/*.png
+#   <data_root>/ann_dir/val/*.png            {0, 1}: 1 = polyp
+# Same preprocessing as polyp.yaml's val.
+name: polyp_cvc300
+kind: seg
+role: eval_only
+eval_for: polyp
+num_classes: 2
+data_root: ${cluster.data_root}/polyp_zeroshot/cvc300
+
+mmseg:
+  crop_size: [352, 352]
+  dataset:
+    type: BaseSegDataset
+    img_suffix: .png
+    seg_map_suffix: .png
+    reduce_zero_label: false
+    metainfo:
+      classes: [background, polyp]
+      palette: [[0, 0, 0], [255, 255, 255]]
+  val:
+    data_prefix: {img_path: img_dir/val, seg_map_path: ann_dir/val}
+    pipeline:
+      - {type: LoadImageFromFile}
+      - {type: Resize, scale: [352, 352], keep_ratio: false}
+      - {type: LoadAnnotations}
+      - {type: PackSegInputs}

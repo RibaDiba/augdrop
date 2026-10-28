@@ -156,7 +156,11 @@ gate_sbatch() {
         else
             echo "WARNING: no flock; two simultaneous submissions could read the same queue." >&2
         fi
-        deps="$(gate_deps "${w}")" || exit 1
+        if [ "${GATE_OVERRIDE:-0}" = 1 ]; then
+            deps=""   # the user lifted the cap for this submission
+        else
+            deps="$(gate_deps "${w}")" || exit 1
+        fi
         if [ -n "${deps}" ]; then
             echo "gate: ${type} x${n} (cap: 1 A6000 job or 4 A5000 jobs) -> waits for job(s) ${deps//:/ }" >&2
         else
@@ -170,6 +174,11 @@ gate_sbatch() {
 # the RUNNING rows (an array's tasks are separate rows, each a job).
 gate_check_running() {
     local rows total
+    # GATE_OVERRIDE=1 (set at submission, inherited by the job): the user lifted the cap
+    if [ "${GATE_OVERRIDE:-0}" = 1 ]; then
+        echo "gate: GATE_OVERRIDE=1, job cap not enforced for this job." >&2
+        return 0
+    fi
     rows="$(squeue -u "${USER:-$(id -un)}" -h -t RUNNING -o '%i|%o|%b')" || {
         echo "ERROR: squeue failed; cannot verify the job cap, so not running." >&2
         return 1

@@ -1,0 +1,11 @@
+# @package _global_
+# dropaug's own recipe for --backbone convnext --dataset polyp (Sensaug never trained this dataset). 352x352
+# images, 1450 training: 20000 iterations at the global batch of 8 (4 GPUs x 2) is ~110 epochs
+# (PraNet trains ~100). The preprocessor pads to the dataset's crop_size, 352.
+task:
+  max_iters: 20000
+  batch_size: 2             # per GPU; x4 GPUs = 8
+  cfg_options:
+    # the task .py bakes its own max_iters into PolyLR's end; the builder leaves it alone
+    param_scheduler.1.end: 20000
+    model.test_cfg: {_delete_: true, mode: whole}   # the task's slide window is larger than a 352 image
