@@ -1,0 +1,47 @@
+# ISIC 2017 Part 1 (lesion segmentation), 2 classes: background and lesion.
+# Kaggle moon1570/isic-2017-train-val-test-images-and-masks, used as downloaded
+# (slurm/download_isic2017.sbatch; data/isic2017 is a symlink to its ISIC2017 folder):
+#   <data_root>/{train,val,test}/images/ISIC_*.jpg
+#   <data_root>/{train,val,test}/masks/ISIC_*_segmentation.png     0 / 255
+#   train 2000, val 150, test 600 (the official ISIC 2017 splits)
+# The masks are 0/255 and mmseg reads 255 as the ignore label, so every pipeline puts
+# BinarizeLabel (tasks/mmseg/transforms.py) after LoadAnnotations: 255 -> 1.
+# The images are large (1022x767 up to 4288x2848); everything is resized to 352x352, as polyp.
+# val is the 150 official validation images; the 600 test images are isic2017_test.
+name: isic2017
+kind: seg
+role: train
+num_classes: 2
+data_root: ${cluster.data_root}/isic2017
+shift_targets: [isic2017_test]   # the held-out test split; not a domain shift
+# the SA loop scores each (op, level), and the curve search runs, on all of val rather than a
+# quarter: 150 images is already few (configs/sa/default.yaml reads it)
+sa_ratio: 1.0
+
+mmseg:
+  crop_size: [352, 352]      # the preprocessor's pad size; images are resized to it, no crop
+  dataset:
+    type: BaseSegDataset
+    img_suffix: .jpg
+    seg_map_suffix: _segmentation.png
+    reduce_zero_label: false
+    metainfo:
+      classes: [background, lesion]
+      palette: [[0, 0, 0], [255, 255, 255]]
+  # no RandomFlip / PhotoMetricDistortion / RandomRotate: the host's ops are the only augmentation
+  train:
+    data_prefix: {img_path: train/images, seg_map_path: train/masks}
+    pipeline:
+      - {type: LoadImageFromFile}
+      - {type: LoadAnnotations}
+      - {type: BinarizeLabel}
+      - {type: Resize, scale: [352, 352], keep_ratio: false}
+      - {type: PackSegInputs}
+  val:
+    data_prefix: {img_path: val/images, seg_map_path: val/masks}
+    pipeline:
+      - {type: LoadImageFromFile}
+      - {type: Resize, scale: [352, 352], keep_ratio: false}
+      - {type: LoadAnnotations}
+      - {type: BinarizeLabel}
+      - {type: PackSegInputs}
