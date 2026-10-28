@@ -169,7 +169,10 @@ STAND_INS: Dict[str, Tuple[str, str]] = {
     "cifar100": ("CIFAR-100", "Wide-ResNet-28-10"),
     **{
         name: ("ImageNet", "ResNet-50")
-        for name in ("a2i2haze", "acdc", "ade20k", "cityscapes", "idd", "loveda", "pascal_voc12", "potsdam", "synapse")
+        for name in (
+            "a2i2haze", "acdc", "ade20k", "cityscapes", "idd", "isic2017", "isic2017_test", "loveda",
+            "pascal_voc12", "polyp", "polyp_colondb", "polyp_cvc300", "polyp_etis", "potsdam", "synapse",
+        )
     },
 }
 

@@ -1,4 +1,4 @@
-"""slurm/gate.sh: the job cap (1 A6000 job or 2 A5000 jobs in flight, up to 4 GPUs each).
+"""slurm/gate.sh: the job cap (1 A6000 job or 4 A5000 jobs in flight, up to 4 GPUs each).
 
 Runs the real bash against stand-in `squeue` and `sbatch` on PATH, so no Slurm is
 needed. The stand-in squeue serves a fixture of `id|command|gres|state` rows.
@@ -118,14 +118,15 @@ def test_a6000_waits_for_everything_in_flight(env):
     assert deps_of(args) == "afterany:10:11"
 
 
-def test_a5000_alone_does_not_wait_and_a_second_fits(env):
+def test_a5000_alone_does_not_wait_and_up_to_four_fit(env):
     assert deps_of(submit(env, "a5000", [])) is None
-    assert deps_of(submit(env, "a5000", [a5(10)])) is None
+    assert deps_of(submit(env, "a5000", [a5(10), a5(11), a5(12)])) is None
 
 
-def test_third_a5000_waits_for_the_oldest_only(env):
-    assert deps_of(submit(env, "a5000", [a5(10), a5(11)])) == "afterany:10"
-    assert deps_of(submit(env, "a5000", [a5(10), a5(11), a5(12, "PENDING")])) == "afterany:10:11"
+def test_fifth_a5000_waits_for_the_oldest_only(env):
+    four = [a5(10), a5(11), a5(12), a5(13)]
+    assert deps_of(submit(env, "a5000", four)) == "afterany:10"
+    assert deps_of(submit(env, "a5000", four + [a5(14, "PENDING")])) == "afterany:10:11"
 
 
 def test_the_two_cards_never_mix(env):
@@ -181,7 +182,7 @@ def test_a_squeue_failure_stops_the_submission(env):
 
 def test_array_throttle(env):
     r = run(env, "gate_array_throttle rtxa6000; gate_array_throttle rtxa5000")
-    assert r.stdout.split() == ["1", "2"]
+    assert r.stdout.split() == ["1", "4"]
 
 
 @pytest.mark.parametrize(
@@ -189,8 +190,8 @@ def test_array_throttle(env):
     [
         ([], True),
         ([a6(1)], True),
-        ([a5(1), a5(2)], True),
-        ([a5(1), a5(2), a5(3)], False),
+        ([a5(1), a5(2), a5(3), a5(4)], True),
+        ([a5(1), a5(2), a5(3), a5(4), a5(5)], False),
         ([a6(1), a5(2)], False),
         ([a6(1, n=4), a6(2, "PENDING", n=4)], True),
         ([a6(1, n=5)], False),  # more than 4 GPUs

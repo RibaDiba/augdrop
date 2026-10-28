@@ -19,7 +19,9 @@ The perturbation goes through the preprocessor's eval slot
 (``GpuAugSegDataPreProcessor.set_eval``), as on Sensaug's diff32 path. The pdf goes to
 ``host.set_sa_pdf``. Lever 3 is ApplyWeightsHook's ``reweight``, called right after;
 in Sensaug it was GradCorrValLoop's ``_apply_redundancy_reweighting``. The NMS arm's
-PruneHook has a ``reweight`` too, which zeroes its pruned ops in the fresh pdf. Every
+PruneHook has a ``reweight`` too. Its pruned set M is latched, so the loop doesn't score
+M at all: M is left out of the curve search and the round's eval, and so out of the
+pdf, whose P(none) still counts M (what zeroing M in a pdf that had it gave). Every
 arm uses this one loop: with neither hook (plain sensaug) the pdf trains as generated.
 
 What Sensaug's train.py set for sensaug (its ``--aug-type ours``) / ``grad_corr``::
@@ -260,10 +262,10 @@ class RobustValLoop(ValLoop):
 
     def update_sa_curve(self) -> None:
         """Re-search the SA curve (Sensaug's ``adaptive_sensitivity_analysis_new``),
-        over the host's vocabulary minus the static prune and ``remove_H``."""
+        over the host's vocabulary minus the static prune, ``remove_H`` and PruneHook's M."""
         print_log("Running sensitivity analysis...", logger="current")
-        excluded = set(self.pruned_augmentations) | (set(self._remove_H_names) if self.remove_H else set())
-        ops = [op for op in self.host.vocabulary() if op not in excluded]
+        latched = self._latched_pruned()
+        ops = [op for op in self._sa_ops() if op not in latched]
 
         self.dp.set_eval_none()
         print_log("Running baseline performance test", logger="current")
@@ -290,11 +292,19 @@ class RobustValLoop(ValLoop):
     def update_pdf(self) -> dict:
         """Score the curve, build this round's pdf, install it on the host, re-apply
         Lever 3, and publish the probe's magnitudes. Returns the per-op metrics."""
-        miou_record, final_metrics = self.test_perturbed_new()
+        latched = self._latched_pruned()
+        if latched and is_main_process():
+            print_log(f"[sa] not scoring the NMS-pruned ops: {sorted(latched)}", logger="current")
+        miou_record, final_metrics = self.test_perturbed_new(skip=latched)
         if self.remove_H:
             sa.remove_H_perturbations(miou_record, self._remove_H_names)
 
-        denom = sa.none_prob_denominator(len(miou_record), self._n_static_excluded, self.hold_none_prob)
+        # M is counted in P(none)'s denominator whatever hold_none_prob says: a pdf
+        # with M in it and M zeroed by q (PruneHook before M was skipped here) held
+        # P(none) and gave each op left the same share it gets this way.
+        denom = sa.none_prob_denominator(
+            len(miou_record), self._n_static_excluded, self.hold_none_prob
+        ) + len(latched & set(self._sa_ops()))
         if self.uniform:
             pdf = sa.generate_uniform_pdf(miou_record, denom)
         elif self.weighted_augs:
@@ -316,12 +326,14 @@ class RobustValLoop(ValLoop):
         self.publish_corr_magnitudes()
         return final_metrics
 
-    def test_perturbed_new(self):
+    def test_perturbed_new(self, skip=()):
         """``({op: {level: mIoU}}, flat per-op metrics)`` for every op and level of the
-        current curve, each on ``ratio`` of the val dataloader."""
+        current curve but ``skip``, each on ``ratio`` of the val dataloader."""
         miou_record, metrics_record = {}, {}
         try:
             for p_type, levels in self.sa_curve.items():
+                if p_type in skip:
+                    continue
                 miou_record[p_type] = {}
                 metrics_record[p_type] = []
                 for level in levels:
@@ -408,6 +420,30 @@ class RobustValLoop(ValLoop):
                 f"Perturbation {op} at magnitude {level} left its input unchanged. "
                 f"Refusing to produce a meaningless SA curve."
             )
+
+    def _sa_ops(self) -> List[str]:
+        """The ops the SA loop may score: the host's vocabulary minus the static prune
+        and ``remove_H``."""
+        excluded = set(self.pruned_augmentations) | (set(self._remove_H_names) if self.remove_H else set())
+        return [op for op in self.host.vocabulary() if op not in excluded]
+
+    def _latched_pruned(self) -> set:
+        """PruneHook's M, which stays pruned for the rest of the run, so the loop stops
+        scoring it. Empty without PruneHook: ApplyWeightsHook re-selects every round,
+        and an op it prunes can come back, so it keeps its levels. If M held every op
+        left, nothing would be scored, so the loop scores them all and PruneHook
+        declines, as before."""
+        hook = self._weights_hook()
+        latched = set(hook.pruned) if isinstance(hook, PruneHook) else set()
+        if latched and not set(self._sa_ops()) - latched:
+            print_log(
+                f"[sa] the NMS prune holds every op the SA loop scores ({sorted(latched)}); "
+                f"scoring them all",
+                logger="current",
+                level=30,
+            )
+            return set()
+        return latched
 
     def _weights_hook(self) -> Optional[Union[ApplyWeightsHook, PruneHook]]:
         return next(

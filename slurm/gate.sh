@@ -5,7 +5,7 @@
 # THE JOB CAP. This repo's Slurm jobs are, at any moment, either
 #
 #     ONE job on A6000s (rtxa6000), or
-#     up to TWO jobs on A5000s (rtxa5000),
+#     up to FOUR jobs on A5000s (rtxa5000), i.e. 16 A5000 GPUs,
 #
 # never a mix. A job takes the GPU count its script's `#SBATCH --gres=gpu:<type>:N`
 # line gives (4 for train and matrix, 1 for probe; at most GATE_MAX_GPUS = 4); the gate
@@ -14,8 +14,8 @@
 # job of this repo, pending or running. eval.sbatch is exempt: it is neither counted
 # nor gated.
 #
-# It is a budget of GATE_CAP = 2 units per JOB, whatever its GPU count: a job on A6000s
-# costs 2 and a job on A5000s costs 1, so "1 A6000 job or 2 A5000 jobs" is the only way
+# It is a budget of GATE_CAP = 4 units per JOB, whatever its GPU count: a job on A6000s
+# costs 4 and a job on A5000s costs 1, so "1 A6000 job or 4 A5000 jobs" is the only way
 # to fill it. An array (the matrix) costs the whole budget, and is submitted with the
 # throttle that keeps it inside.
 #
@@ -36,7 +36,7 @@
 # --gres names no rtxa6000/rtxa5000 type, or more than GATE_MAX_GPUS of them, is
 # counted as more than the whole budget.
 
-GATE_CAP=2
+GATE_CAP=4
 GATE_MAX_GPUS=4
 _GATE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -44,7 +44,7 @@ _GATE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # <job id>|<command>|<gres>, e.g. 7878654_7|/…/slurm/matrix.sbatch|gres/gpu:rtxa6000:4.
 _GATE_AWK='
 function weight(b,   s, n, t) {
-    if (match(b, /rtxa6000(:[0-9]+)?/)) t = 2
+    if (match(b, /rtxa6000(:[0-9]+)?/)) t = cap
     else if (match(b, /rtxa5000(:[0-9]+)?/)) t = 1
     else return cap + 1
     s = substr(b, RSTART, RLENGTH); n = 1
@@ -64,17 +64,17 @@ gate_type() {
     case "${1:-}" in
         a6000|rtxa6000) printf 'rtxa6000\n' ;;
         a5000|rtxa5000) printf 'rtxa5000\n' ;;
-        *) echo "ERROR: GPU='${1:-}' is not allowed: only a6000 (1 job at a time) or a5000 (2 at a time)." >&2
+        *) echo "ERROR: GPU='${1:-}' is not allowed: only a6000 (1 job at a time) or a5000 (4 at a time, 16 GPUs)." >&2
            return 1 ;;
     esac
 }
 
 # What one job of that type costs against GATE_CAP.
 gate_weight() {
-    case "$1" in rtxa6000) echo 2 ;; rtxa5000) echo 1 ;; *) return 1 ;; esac
+    case "$1" in rtxa6000) echo "${GATE_CAP}" ;; rtxa5000) echo 1 ;; *) return 1 ;; esac
 }
 
-# The array throttle (%K) that keeps an array inside the cap: 1 on A6000, 2 on A5000.
+# The array throttle (%K) that keeps an array inside the cap: 1 on A6000, 4 on A5000.
 gate_array_throttle() {
     local w; w="$(gate_weight "$1")" || return 1
     echo $(( GATE_CAP / w ))
@@ -182,11 +182,15 @@ gate_sbatch() {
         else
             echo "WARNING: no flock; two simultaneous submissions could read the same queue." >&2
         fi
-        deps="$(gate_deps "${w}")" || exit 1
-        if [ -n "${deps}" ]; then
-            echo "gate: ${type} x${n} (cap: 1 A6000 job or 2 A5000 jobs) -> waits for job(s) ${deps//:/ }" >&2
+        if [ "${GATE_OVERRIDE:-0}" = 1 ]; then
+            deps=""   # the user lifted the cap for this submission
         else
-            echo "gate: ${type} x${n} (cap: 1 A6000 job or 2 A5000 jobs) -> nothing ahead, can start at once" >&2
+            deps="$(gate_deps "${w}")" || exit 1
+        fi
+        if [ -n "${deps}" ]; then
+            echo "gate: ${type} x${n} (cap: 1 A6000 job or 4 A5000 jobs) -> waits for job(s) ${deps//:/ }" >&2
+        else
+            echo "gate: ${type} x${n} (cap: 1 A6000 job or 4 A5000 jobs) -> nothing ahead, can start at once" >&2
         fi
         sbatch --nodes=1 --gres="gpu:${type}:${n}" ${deps:+--dependency="afterany:${deps}"} "${opts[@]}" "$@"
     ) 9>"${lock}"
@@ -196,6 +200,11 @@ gate_sbatch() {
 # the RUNNING rows (an array's tasks are separate rows, each a job).
 gate_check_running() {
     local rows total
+    # GATE_OVERRIDE=1 (set at submission, inherited by the job): the user lifted the cap
+    if [ "${GATE_OVERRIDE:-0}" = 1 ]; then
+        echo "gate: GATE_OVERRIDE=1, job cap not enforced for this job." >&2
+        return 0
+    fi
     rows="$(squeue -u "${USER:-$(id -un)}" -h -t RUNNING -o '%i|%o|%b')" || {
         echo "ERROR: squeue failed; cannot verify the job cap, so not running." >&2
         return 1
@@ -204,7 +213,7 @@ gate_check_running() {
         "${_GATE_AWK}"'NF >= 3 && mine($2) { s += weight($3) } END { print s + 0 }')"
     if (( total > GATE_CAP )); then
         echo "ERROR: job cap exceeded: the running jobs of this repo cost ${total} (cap ${GATE_CAP}:" >&2
-        echo "       1 A6000 job, or 2 A5000 jobs, up to ${GATE_MAX_GPUS} GPUs each). Submit through slurm/submit.sh so" >&2
+        echo "       1 A6000 job, or 4 A5000 jobs, up to ${GATE_MAX_GPUS} GPUs each). Submit through slurm/submit.sh so" >&2
         echo "       the job queues behind the others. Not running." >&2
         printf '%s\n' "${rows}" | awk -F'|' -v repo="$(_gate_repo_dir)/slurm/" -v cap="${GATE_CAP}" -v maxg="${GATE_MAX_GPUS}" \
             "${_GATE_AWK}"'NF >= 3 && mine($2) { print "       " $1 "  " $3 }' >&2

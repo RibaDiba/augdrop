@@ -1,0 +1,46 @@
+# Polyp segmentation, PraNet protocol (Fan et al., MICCAI 2020): 2 classes, background and polyp.
+# Written by scripts/prepare_polyp.py (slurm/prepare_polyp.sbatch) from PraNet's TrainDataset
+# and TestDataset, in the layout mmseg's BaseSegDataset reads:
+#   <data_root>/img_dir/{train,val}/*.png    RGB, lossless re-encode of the source
+#   <data_root>/ann_dir/{train,val}/*.png    {0, 1}: 1 = polyp
+#   train  1450  (PraNet's TrainDataset: 900 Kvasir-SEG + 550 CVC-ClinicDB)
+#   val     162  (PraNet's Kvasir 100 + CVC-ClinicDB 62; names are kvasir_* / clinicdb_*)
+# Not Kvasir-SEG's own 880/120 split. The three zero-shot sets (never trained on) are the
+# shift_targets: polyp_colondb (380), polyp_etis (196), polyp_cvc300 (60).
+#
+# PraNet resizes to 352x352 for train and test, and scores at the ground truth's size, so val
+# resizes the image and then loads the label at its native size, as the other datasets here
+# do. (The torchvision geometric ops refuse a label whose size differs from the image's, so
+# probing a torchvision host on val needs LoadAnnotations before Resize.)
+name: polyp
+kind: seg
+role: train
+num_classes: 2
+data_root: ${cluster.data_root}/polyp
+shift_targets: [polyp_colondb, polyp_etis, polyp_cvc300]
+
+mmseg:
+  crop_size: [352, 352]      # the preprocessor's pad size; images are resized to it, no crop
+  dataset:
+    type: BaseSegDataset
+    img_suffix: .png
+    seg_map_suffix: .png
+    reduce_zero_label: false
+    metainfo:
+      classes: [background, polyp]
+      palette: [[0, 0, 0], [255, 255, 255]]
+  # no RandomFlip / PhotoMetricDistortion / RandomRotate: the host's ops are the only augmentation
+  train:
+    data_prefix: {img_path: img_dir/train, seg_map_path: ann_dir/train}
+    pipeline:
+      - {type: LoadImageFromFile}
+      - {type: LoadAnnotations}
+      - {type: Resize, scale: [352, 352], keep_ratio: false}
+      - {type: PackSegInputs}
+  val:
+    data_prefix: {img_path: img_dir/val, seg_map_path: ann_dir/val}
+    pipeline:
+      - {type: LoadImageFromFile}
+      - {type: Resize, scale: [352, 352], keep_ratio: false}
+      - {type: LoadAnnotations}
+      - {type: PackSegInputs}

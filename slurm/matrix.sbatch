@@ -4,8 +4,8 @@
 #SBATCH --nodes=1
 
 ## One array task = one train.sbatch run, so the same allocation: 4 GPUs. The cap
-## (slurm/gate.sh) is 1 A6000 job or 2 A5000 jobs at a time; --submit sets the GPU
-## type (GPU=a6000|a5000) and the throttle (%1 / %2), whatever this line says.
+## (slurm/gate.sh) is 1 A6000 job or 4 A5000 jobs at a time; --submit sets the GPU
+## type (GPU=a6000|a5000) and the throttle (%1 / %4), whatever this line says.
 #SBATCH --time=24:00:00
 #SBATCH --qos=huge-long
 #SBATCH --account=gamma
@@ -52,7 +52,7 @@ set -o pipefail
 # Other env:
 #   POINTS=3,17                   --submit only these task indices (Slurm --array syntax)
 #   GPU=a6000                     --submit's card: a6000 (one task at a time, %1) or a5000
-#                                 (two at a time, %2). Anything submitted while the array is
+#                                 (four at a time, %4). Anything submitted while the array is
 #                                 in flight waits for it, and the array waits for what was
 #                                 in flight (slurm/gate.sh). MAX_PARALLEL is ignored
 #   EXTRA_SBATCH_ARGS="..."       forwarded to sbatch by --submit (not --array: use POINTS)

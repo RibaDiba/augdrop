@@ -4,7 +4,7 @@
 #SBATCH --nodes=1
 
 ## GAMMA training config (Sensaug's train_nexus_gamma.sbatch allocation): 4 GPUs a job.
-## The cap (slurm/gate.sh) is 1 A6000 job or 2 A5000 jobs in flight, so submit with
+## The cap (slurm/gate.sh) is 1 A6000 job or 4 A5000 jobs in flight, so submit with
 ## `bash slurm/submit.sh <name> slurm/train.sbatch ...` (GPU=a5000 for the A5000 arm),
 ## which sets the card and queues behind what is ahead.
 #SBATCH --time=24:00:00
