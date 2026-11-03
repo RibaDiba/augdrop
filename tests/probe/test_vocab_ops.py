@@ -24,13 +24,23 @@ EXPECTED_METHOD = {
     "randaug_default": FINITE_DIFF,
     "trivialaug_wide": FINITE_DIFF,
     "trivialaug_diff": AUTOGRAD,
+    "randaug_diff": AUTOGRAD,
+    "augmix_diff": AUTOGRAD,
+    "smartaug_diff": AUTOGRAD,
     "autoaugment": UNPROBED,
+    "madaug": FINITE_DIFF,
+    "faster_aa": AUTOGRAD,
 }
-MAGNITUDE_FREE = {"Identity", "AutoContrast", "Equalize", "Invert"}
+# The split families: each keeps four torchvision ops as they are.
+DIFF_FAMILIES = {"trivialaug_diff", "randaug_diff", "augmix_diff", "smartaug_diff"}
+MAGNITUDE_FREE = {"Identity", "AutoContrast", "Equalize", "Invert", "Flip", "HorizontalFlip"}
 # torchvision's enhance ops carry an exact tangent.
 ENHANCE = {"Brightness", "Color", "Contrast", "Sharpness"}
-# trivialaug_diff keeps these as torchvision's own ops: no tangent, finite differences.
+# The split families keep these as torchvision's own ops: no tangent, finite differences.
 EXACT_STEPPED = {"Posterize", "Solarize"}
+# faster_aa's ops that step with the magnitude (dda gives them a straight-through
+# gradient in the search; the probe has none).
+FASTER_AA_STEPPED = {"Posterize", "Solarize", "Cutout"}
 
 
 def test_audit_and_probe_agree_on_the_strongest_magnitude():
@@ -43,9 +53,11 @@ def test_every_op_is_measured_the_way_its_spec_says():
     for name, spec in vocab.OPS.items():
         base = name.split(".")[-1]
         expected = EXPECTED_METHOD[spec.family]
-        if base in MAGNITUDE_FREE:
+        if base in MAGNITUDE_FREE or spec.couples_images:
             expected = UNPROBED
-        elif spec.family == "trivialaug_diff" and base in EXACT_STEPPED:
+        elif spec.family == "faster_aa" and base in FASTER_AA_STEPPED:
+            expected = FINITE_DIFF
+        elif spec.family in DIFF_FAMILIES and base in EXACT_STEPPED:
             expected = FINITE_DIFF
         elif expected == FINITE_DIFF and base in ENHANCE:
             expected = TANGENT
@@ -78,8 +90,14 @@ def test_every_host_vocabulary_probes():
     """A host's vocabulary is a valid probe op list, in the host's order."""
     hosts = pytest.importorskip("hosts")
     batch = make_batch(n=2, size=24)
+    required = {
+        "sensaug": {"max_iters": 20000},
+        "randaugment_diff": {"dataset": "cityscapes"},
+        "smartsampling_diff": {"max_iters": 20000},
+        "madaug": {"max_iters": 20000},
+    }
     for host_name, cls in hosts.HOSTS.items():
-        host = cls(max_iters=20000) if host_name == "sensaug" else cls()
+        host = cls(**required.get(host_name, {}))
         ops = vocab.build_vocab({"ops": host.vocabulary()})
         magnitudes = {n: strength_to_magnitude(s, 0.3) for n, s in ops.items() if s.has_magnitude}
         rows = collect_grads(ToyAdapter(), batch, ops, magnitudes)

@@ -1,0 +1,23 @@
+# AugMix as Sensaug trained it (torchvision AugMix: severity 3, width 3, depth 1-3,
+# alpha 1, all 13 ops), over its ops made differentiable (vocab augmix_diff). The
+# settings are Sensaug's and live in src/hosts/augmix.py, not here. Each image is mixed
+# with 3 chains of 1-3 ops; the mask is left as it is, as in Sensaug, so a geometric op
+# in a chain misaligns the mix with its label. The 9 signed ops are split into _pos/_neg.
+# Trainable: the mmseg preprocessor applies these ops on GPU.
+defaults:
+  - override /vocab@_global_.vocab: augmix_diff
+
+name: augmix_diff
+probe_interval: ${probe.schedule.interval}
+probe_iters: ${probe.schedule.iters}
+control_iters: ${probe.schedule.control_iters}
+# The probe's magnitude: one bin per image, uniform on the first 3 of AugMix's 10. The
+# 18 split ops go through autograd; the four torchvision ops are faded in, as in
+# trivialaugment_diff.yaml.
+fade:
+  ops:
+    - augmix_diff.Solarize
+    - augmix_diff.Posterize
+    - augmix_diff.AutoContrast
+    - augmix_diff.Equalize
+  at: 1.0

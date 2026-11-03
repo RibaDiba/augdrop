@@ -94,8 +94,9 @@ class ModelAdapter(Protocol):
 def op_method(op) -> str:
     """How ``op``'s row is measured when it isn't faded: ``"autograd"``, ``"tangent"``
     (vocab ``grad_mode="none"`` with a ``tangent``), ``"finite_diff"`` (the other
-    ``grad_mode="none"`` ops), or ``"unprobed"`` (no magnitude to differentiate)."""
-    if getattr(op, "mag_range", None) is None:
+    ``grad_mode="none"`` ops), or ``"unprobed"`` (no magnitude to differentiate, or an op
+    that ``couples_images``: its value for an image depends on the rest of the batch)."""
+    if getattr(op, "mag_range", None) is None or getattr(op, "couples_images", False):
         return UNPROBED
     if op.grad_mode == "autograd":
         return AUTOGRAD
@@ -126,7 +127,12 @@ def resolve_methods(ops: Mapping[str, Any], fade: Fade = None) -> dict[str, str]
     """How each op's row is measured: ``"fade"`` for the ops ``fade`` selects (see
     fade.py), ``op_method`` for the rest."""
     faded = set(faded_ops(ops, fade))
-    return {name: FADE if name in faded else op_method(op) for name, op in ops.items()}
+    # A coupling op stays unprobed when faded too: its fade target is a blend with
+    # another image of the batch.
+    return {
+        name: FADE if name in faded and not getattr(op, "couples_images", False) else op_method(op)
+        for name, op in ops.items()
+    }
 
 
 def op_seed(probe_seed: int, name: str) -> int:

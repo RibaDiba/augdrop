@@ -234,6 +234,8 @@ class _Auditor:
         return ""
 
     def per_image(self, spec: OpSpec) -> str:
+        if spec.couples_images:
+            return SKIP, "couples images (its value for one image depends on the batch)"
         if not spec.has_magnitude:
             batched, _ = self._apply(spec, self.images, None)
             for i in range(self.batch_size):
@@ -253,6 +255,8 @@ class _Auditor:
         return ""
 
     def gradient(self, spec: OpSpec) -> str:
+        if spec.couples_images:
+            return SKIP, "couples images (its value for one image depends on the batch)"
         if spec.grad_mode != "autograd":
             return SKIP, f"grad_mode={spec.grad_mode!r}"
         # Geometric ops go through the label path, which is what the probe calls.

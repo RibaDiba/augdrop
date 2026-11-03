@@ -12,9 +12,9 @@ from typing import Iterable, Optional
 import numpy as np
 
 from .base import AugHost, draw_flips
-from .randaugment import IDENTITY, OP_ORDER, family_ops
+from .randaugment import OP_ORDER, SIGNED_OPS, family_ops, split_ops, split_weights
 
-__all__ = ["TrivialAugmentDiffHost", "TrivialAugmentHost", "split_ops"]
+__all__ = ["SIGNED_OPS", "TrivialAugmentDiffHost", "TrivialAugmentHost", "split_ops"]
 
 
 class TrivialAugmentHost(AugHost):
@@ -57,24 +57,6 @@ class TrivialAugmentHost(AugHost):
         return bins, draw_flips(self._names, batch_size, rng)
 
 
-#: The ops TrivialAugmentWide negates with p = 0.5, which ``trivialaug_diff`` splits
-#: into ``_pos``/``_neg``.
-SIGNED_OPS = frozenset(
-    {"Rotate", "Color", "Contrast", "Brightness", "Sharpness", "ShearX", "ShearY", "TranslateX", "TranslateY"}
-)
-
-
-def split_ops(family: str) -> tuple:
-    """A split family's op names for OP_ORDER, minus Identity: each signed op as its
-    ``_pos`` then ``_neg``."""
-    names = []
-    for op in OP_ORDER:
-        if op == IDENTITY:
-            continue
-        names.extend([f"{family}.{op}_pos", f"{family}.{op}_neg"] if op in SIGNED_OPS else [f"{family}.{op}"])
-    return tuple(names)
-
-
 class TrivialAugmentDiffHost(TrivialAugmentHost):
     """TrivialAugmentWide over vocab's ``trivialaug_diff``: the same policy, with the
     random sign made explicit. A signed op's 1/13 (given that some op is drawn) is
@@ -102,13 +84,11 @@ class TrivialAugmentDiffHost(TrivialAugmentHost):
         self.num_magnitude_bins = int(num_magnitude_bins)
 
         names = split_ops(self.family)
-        weights = np.array([0.5 if name.endswith(("_pos", "_neg")) else 1.0 for name in names])
-        n_ops = len(OP_ORDER) - 1
         AugHost.__init__(
             self,
             names,
-            weights / weights.sum(),
-            none_prob=1.0 / (n_ops + 1),
+            split_weights(names),
+            none_prob=1.0 / len(OP_ORDER),
             probe_interval=probe_interval,
             probe_iters=probe_iters,
             control_iters=control_iters,

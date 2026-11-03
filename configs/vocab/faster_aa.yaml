@@ -1,0 +1,6 @@
+# Faster AutoAugment's 17 ops (the paper's Table 2), in dda's implementation and units
+# (vocab/families/faster_aa.py): the 9 signed ops split into _pos/_neg (26 ops).
+# Solarize, Posterize and Cutout step with the magnitude; HorizontalFlip, Invert,
+# AutoContrast and Equalize have none; SamplePairing blends in an image of the batch.
+families: [faster_aa]
+exclude: []

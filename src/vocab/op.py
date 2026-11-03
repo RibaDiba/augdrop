@@ -65,6 +65,10 @@ class OpSpec:
                  the 8-bit cast). The probe uses it instead of finite differences.
                  Photometric ops only: along a tangent the label stays where the op
                  put it, and a geometric op's row must move the label with the image.
+    couples_images  True for an op whose output for one image depends on the batch's
+                 other images (SamplePairing blends in a partner). Its value for an
+                 image is not a property of that image, so the probe gives it an
+                 "unprobed" NaN row, and training applies it over the whole batch.
     """
 
     name: str
@@ -77,6 +81,7 @@ class OpSpec:
     warps_label: bool
     fn: OpFn = field(repr=False, compare=False)
     tangent: Optional[TangentFn] = field(default=None, repr=False, compare=False)
+    couples_images: bool = False
 
     def __post_init__(self):
         if self.kind not in KINDS:

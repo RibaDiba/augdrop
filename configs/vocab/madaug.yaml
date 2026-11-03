@@ -1,0 +1,21 @@
+# MADAug's 16 ops (vocab/families/madaug.py), in its OPS_NAMES order. 13 are AutoAugment's
+# Table 6 ops at its ranges (randaug_default), Invert is autoaugment's, and Cutout and Flip
+# are madaug's own. Identity is the host's per-image no-op, not an op.
+ops:
+  - randaug_default.ShearX
+  - randaug_default.ShearY
+  - randaug_default.TranslateX
+  - randaug_default.TranslateY
+  - randaug_default.Rotate
+  - randaug_default.AutoContrast
+  - autoaugment.Invert
+  - randaug_default.Equalize
+  - randaug_default.Solarize
+  - randaug_default.Posterize
+  - randaug_default.Contrast
+  - randaug_default.Color
+  - randaug_default.Brightness
+  - randaug_default.Sharpness
+  - madaug.Cutout
+  - madaug.Flip
+exclude: []

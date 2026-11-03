@@ -1,0 +1,19 @@
+# SmartSamplingAugment's 7 ops (the ops of RandAugment's Table 5 with a positive gain,
+# Identity left out) from SmartAugment's Table 2, differentiable (vocab/families/
+# smartaug_diff.py): the 5 geometric ops and Sharpness split into _pos/_neg (13 ops).
+# AutoContrast is torchvision's own. In smartaug_diff's order, which the host follows.
+ops:
+  - smartaug_diff.Sharpness_pos
+  - smartaug_diff.Sharpness_neg
+  - smartaug_diff.AutoContrast
+  - smartaug_diff.Rotate_pos
+  - smartaug_diff.Rotate_neg
+  - smartaug_diff.ShearX_pos
+  - smartaug_diff.ShearX_neg
+  - smartaug_diff.ShearY_pos
+  - smartaug_diff.ShearY_neg
+  - smartaug_diff.TranslateX_pos
+  - smartaug_diff.TranslateX_neg
+  - smartaug_diff.TranslateY_pos
+  - smartaug_diff.TranslateY_neg
+exclude: []

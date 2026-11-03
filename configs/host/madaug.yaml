@@ -1,0 +1,44 @@
+# MADAug (Hou, Zhang & Zhou, ICCV 2023) over its 16 ops (vocab madaug): a policy network
+# on each training image's feature picks k ops and their levels, trained online against
+# the val loss after a virtual step of the segmentor. The sampling is hosts/madaug.py,
+# the policy src/madaug/, the per-step glue tasks/mmseg/madaug_hooks.py (MADAugPolicyHook,
+# added by the mmseg builder). mmseg only. Defaults are MADAug's (main.sh on reduced
+# CIFAR-10, the paper's Table 5); the CLAUDE.md MADAug notes list what differs.
+defaults:
+  - override /vocab@_global_.vocab: madaug
+
+name: madaug
+max_iters: ${task.max_iters}   # the curriculum's clock
+k_ops: 2                       # ops per augmented image, drawn from p without replacement
+delta: 0.3                     # level perturbation (perturb_param)
+temperature: 3.0               # softmax temperature of the training draw (main.sh, CIFAR-10)
+tau: 0.16667                   # curriculum p(t) = tanh(t / tau), t a fraction of training: 40 / 240 epochs
+prior_momentum: 0.99           # base_probs(): running mean of the policy's p, the selector's prior
+probe_interval: ${probe.schedule.interval}
+probe_iters: ${probe.schedule.iters}
+control_iters: ${probe.schedule.control_iters}
+# The policy's training (MADAugPolicyHook), not the host's: popped by host_kwargs.
+policy:
+  search_freq: 3               # a policy update every 3 steps (main.sh; Table 5 found 1 best)
+  lr: 0.001                    # Adam (--proj_learning_rate)
+  weight_decay: 0.001          # --proj_weight_decay
+  n_layers: 0                  # a linear policy (Table 5: no hidden layer is best)
+  n_hidden: 128
+  hypergrad: exact             # or finite_diff (DARTS) where the exact form does not fit
+  fd_eps: 0.01
+  split: val                   # the dataloader the policy's validation batches come from
+# The probe's magnitude: the policy's own level on each probe image, perturbed and signed
+# as the method draws it. The four enhance ops go through their exact tangent and the five
+# geometric ones by finite differences, the label moving with the image (as
+# trivialaugment.yaml). The ops with no derivative in their magnitude are faded in:
+# Solarize's and Posterize's 8-bit steps, Cutout's hard edge, and the four with none.
+fade:
+  ops:
+    - randaug_default.AutoContrast
+    - autoaugment.Invert
+    - randaug_default.Equalize
+    - randaug_default.Solarize
+    - randaug_default.Posterize
+    - madaug.Cutout
+    - madaug.Flip
+  at: 1.0

@@ -16,7 +16,7 @@
 # paths too), so a script argument can't set it; this reads the script's own
 # `#SBATCH --job-name` and passes `-J <name>-<that>`. Logs then group under
 # slurm/logs/<name>-<that>/ (common.sh). Extra sbatch flags: SBATCH_ARGS="..." (not
-# --gres, -G, --gpus*, --dependency: the cap owns those).
+# --gres, -G, --gpus*, --nodes, --dependency, --array: the cap owns those).
 # For the matrix, use NAME=<name> bash slurm/matrix.sbatch --submit.
 set -eu
 
