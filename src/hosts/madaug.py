@@ -53,6 +53,7 @@ __all__ = [
     "RANGES",
     "SIGNED",
     "VOCAB_NAMES",
+    "expected_ops",
     "level_to_magnitude",
     "perturb_level",
 ]
@@ -128,6 +129,37 @@ NO_OP = NONE_KEY[0]
 
 #: One slot of a batch's draw: per image, ``(vocab op name or NO_OP, magnitude)``.
 Slot = List[Tuple[str, float]]
+
+
+def expected_ops(p, k: int) -> np.ndarray:
+    """Per image (rows of ``p``, MADAug's 17 outputs): the expected number of real ops
+    (not Identity) among ``k`` draws without replacement, as ``MADAugHost.draw`` makes
+    them (k capped at the row's nonzero entries; numpy's sequential renormalized draw).
+    Per augmented image: the curriculum's p(t) multiplies it. For the prune's per-batch
+    check, which compares it before and after a prune."""
+    ident = OPS_NAMES.index(IDENTITY)
+    out = []
+    for row in np.asarray(p, dtype=np.float64):
+        row = row / row.sum()
+        k_row = min(int(k), int(np.count_nonzero(row)))
+        out.append(k_row - _p_drawn(row, ident, k_row))
+    return np.asarray(out)
+
+
+def _p_drawn(row: np.ndarray, target: int, k: int) -> float:
+    """P(``target`` is among ``k`` draws without replacement from ``row``)."""
+    if k <= 0 or row[target] <= 0:
+        return 0.0
+    total = float(row[target])
+    if k == 1:
+        return total
+    for j in np.flatnonzero(row):
+        if j == target:
+            continue
+        rest = row.copy()
+        rest[j] = 0.0
+        total += float(row[j]) * _p_drawn(rest / rest.sum(), target, k - 1)
+    return total
 
 
 def perturb_level(level: np.ndarray, delta: float, rng: np.random.Generator) -> np.ndarray:
@@ -279,6 +311,21 @@ class MADAugHost(AugHost):
         implied = super().prune(names, hold_none_prob=True)
         self.clear_weights()
         return implied
+
+    def pruned_outputs(self) -> Tuple[int, ...]:
+        """The static prune as policy outputs (indices into ``OPS_NAMES``), for
+        ``madaug.Projection.prune``: the policy's own p then gives them 0 with p(Identity)
+        held, in the relaxed update as in the draw."""
+        return self.outputs_of(self._pruned)
+
+    def outputs_of(self, names: Iterable[str]) -> Tuple[int, ...]:
+        """Vocab op names as policy outputs (indices into ``OPS_NAMES``), in MADAug's
+        order: an online prune's M (PruneHook's ``runner.latched_prune``) for the policy."""
+        names = set(names)
+        unknown = names - set(self._names)
+        if unknown:
+            raise KeyError(f"{sorted(unknown)} are not this host's ops")
+        return tuple(OPS_NAMES.index(op) for op in self._ops if VOCAB_NAMES[op] in names)
 
     # --- the draws -------------------------------------------------------------------
 

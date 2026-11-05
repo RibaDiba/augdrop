@@ -20,6 +20,21 @@ on its own batches and the gradient is averaged, so every rank holds the same po
 The live policy is ``runner.madaug_policy``, which ``CollectGradientHook`` reads for the
 probe's magnitudes.
 
+A prune removes the pruned ops from the policy network (``Projection.prune``): their rows
+leave its output layer, so its trainable parameters shrink, and their weight logits stay
+as a frozen constant, so the policy's p gives them 0, holds p(Identity) and rescales the
+survivors, in the relaxed update and in the draw alike (``madaug.policy``). Two prunes
+reach it. The static prune (the ``prune:`` block) is applied at the policy's
+initialization, or, on a fork of an unpruned run, at the policy it loads. The online one
+is selector nms's latched M (PruneHook publishes it as ``runner.latched_prune``), applied
+before the first step after each probe that grows it, with Adam's state for the kept rows
+carried over. The pruned columns go into every checkpoint (``frozen_cols``), so a pruned
+run's checkpoints load back pruned. Every step logs the policy's size
+(``train/madaug_policy_params``, ``train/madaug_policy_frozen``) and, once something is
+pruned, the check: p(Identity) with and without the prune (asserted equal) and the
+expected real ops per augmented image with and without it (logged only: with k draws
+without replacement it moves with the survivors' spread).
+
 Defaults are MADAug's: Adam at lr 1e-3, weight decay 1e-3 (``--proj_learning_rate`` in
 main.sh, ``--proj_weight_decay``), no hidden layer, an update every 3 steps (main.sh's
 ``--search_freq 3`` on CIFAR-10; the paper's Table 5 found every step best). The virtual
@@ -39,6 +54,7 @@ from mmengine.logging import print_log
 from mmengine.registry import HOOKS
 
 import madaug
+from hosts.madaug import IDENTITY, OPS_NAMES, expected_ops
 
 from .backend import MMSegBackend, functional_logits, pooled_features, unwrap
 from .hooks import host_of
@@ -61,22 +77,35 @@ def probe_set_levels(backend, policy, probe_set, dataset, batch_size: int = 1, n
 
 def policy_from_checkpoint(path, device=None) -> Optional[madaug.Projection]:
     """The MADAug policy saved in an mmengine checkpoint (``CHECKPOINT_KEY``, written by
-    MADAugPolicyHook), or None when it holds none (a run of another method)."""
+    MADAugPolicyHook), pruned as it was saved, or None when it holds none (a run of
+    another method)."""
     checkpoint = torch.load(str(path), map_location="cpu", weights_only=False)
     state = checkpoint.get(CHECKPOINT_KEY) if isinstance(checkpoint, dict) else None
     if state is None:
         return None
     weights = state["state_dict"]
-    first = min((k for k in weights if k.endswith(".weight")), key=lambda k: int(k.split(".")[1]))
-    last = max((k for k in weights if k.endswith(".weight")), key=lambda k: int(k.split(".")[1]))
+    layers = [k for k in weights if k.startswith("projection.") and k.endswith(".weight")]
+    first = min(layers, key=lambda k: int(k.split(".")[1]))
+    last = max(layers, key=lambda k: int(k.split(".")[1]))
+    saved = tuple(state.get("frozen_cols") or ())
     policy = madaug.Projection(
         int(weights[first].shape[1]),
         n_layers=int(state["n_layers"]),
         n_hidden=int(state["n_hidden"]),
-        n_outputs=int(weights[last].shape[0]) // 2,
+        # The output layer holds the live outputs' two rows each; the pruned are the rest.
+        n_outputs=int(weights[last].shape[0]) // 2 + len(saved),
     )
-    policy.load_state_dict(weights)
+    _load_policy(policy, state)
     return policy.to(device) if device is not None else policy
+
+
+def _load_policy(policy: madaug.Projection, state: dict) -> None:
+    """``state`` (a checkpoint's ``CHECKPOINT_KEY`` entry) into a fresh, unpruned
+    ``policy``, pruned as it was saved, so the shapes match."""
+    if policy.frozen_outputs:
+        raise ValueError("load a checkpoint's policy into a fresh one: a prune can't be undone")
+    policy.prune(tuple(state.get("frozen_cols") or ()))
+    policy.load_state_dict(state["state_dict"])
 
 
 def _rng() -> np.random.Generator:
@@ -141,23 +170,53 @@ class MADAugPolicyHook(Hook):
         size = tuple(getattr(self.dp, "size", None) or (512, 512))
         with torch.no_grad(), madaug.eval_mode(model):
             width = pooled_features(model, torch.zeros(1, 3, *size, device=device)).shape[1]
-        self.policy = madaug.Projection(
-            width, n_layers=self.n_layers, n_hidden=self.n_hidden, n_outputs=self.host.num_policy_outputs
-        ).to(device)
+        self._width, self._device = int(width), device
+        self.policy = self._new_policy()
         for param in self.policy.parameters():
             broadcast(param.data, src=0)
-        self.optimizer = torch.optim.Adam(
-            self.policy.parameters(), lr=self.lr, betas=(0.9, 0.999), weight_decay=self.weight_decay
-        )
+        # The static prune, at the policy's initialization (every rank holds rank 0's
+        # weights, so every rank prunes the same rows); a fork of an unpruned run prunes
+        # at the policy it loads instead (after_load_checkpoint).
+        self.policy.prune(self.host.pruned_outputs())
+        self.optimizer = self._new_optimizer(self.policy)
         self.backend = MMSegBackend.from_runner(runner, split=self.split)
         self._val_iter = None
         runner.madaug_policy = self.policy
+        trainable, frozen = self.policy.param_counts()
         print_log(
             f"[madaug] policy {width} -> {2 * self.host.num_policy_outputs} ({self.n_layers} hidden), "
-            f"update every {self.search_freq} step(s), {self.hypergrad} hypergradient, "
-            f"validation batches from the {self.split} dataloader",
+            f"{trainable} trainable parameters, update every {self.search_freq} step(s), "
+            f"{self.hypergrad} hypergradient, validation batches from the {self.split} dataloader",
             logger="current",
         )
+        if self.policy.frozen_outputs:
+            self._log_pruned("the static prune", self.policy.frozen_outputs)
+
+    def _new_policy(self) -> madaug.Projection:
+        return madaug.Projection(
+            self._width, n_layers=self.n_layers, n_hidden=self.n_hidden, n_outputs=self.host.num_policy_outputs
+        ).to(self._device)
+
+    def _new_optimizer(self, policy) -> torch.optim.Optimizer:
+        return torch.optim.Adam(policy.parameters(), lr=self.lr, betas=(0.9, 0.999), weight_decay=self.weight_decay)
+
+    def _log_pruned(self, why: str, cols) -> None:
+        trainable, frozen = self.policy.param_counts()
+        print_log(
+            f"[madaug] {why} prunes policy output(s) {[OPS_NAMES[c] for c in cols]}: "
+            f"{len(self.policy.frozen_outputs)} pruned in all, {trainable} trainable parameters, "
+            f"{frozen} frozen; p(Identity) held, survivors rescaled",
+            logger="current",
+        )
+
+    def _prune_to_run(self, runner, why: str) -> None:
+        """Prune the policy to the run's prune: the static one plus PruneHook's latched M.
+        Both only grow, so the network only shrinks."""
+        latched = getattr(runner, "latched_prune", ()) or ()
+        cols = set(self.host.pruned_outputs()) | set(self.host.outputs_of(latched))
+        added = self.policy.prune(cols, self.optimizer)
+        if added:
+            self._log_pruned(why, added)
 
     def before_save_checkpoint(self, runner, checkpoint: dict) -> None:
         checkpoint[CHECKPOINT_KEY] = {
@@ -165,6 +224,7 @@ class MADAugPolicyHook(Hook):
             "optimizer": self.optimizer.state_dict(),
             "n_layers": self.n_layers,
             "n_hidden": self.n_hidden,
+            "frozen_cols": list(self.policy.frozen_outputs),
         }
 
     def after_load_checkpoint(self, runner, checkpoint: dict) -> None:
@@ -172,8 +232,24 @@ class MADAugPolicyHook(Hook):
         if state is None:
             print_log("[madaug] the checkpoint holds no policy; it starts fresh", logger="current", level=30)
             return
-        self.policy.load_state_dict(state["state_dict"])
-        self.optimizer.load_state_dict(state["optimizer"])
+        saved = tuple(state.get("frozen_cols") or ())
+        latched = getattr(runner, "latched_prune", ()) or ()
+        allowed = set(self.host.pruned_outputs()) | set(self.host.outputs_of(latched))
+        if not set(saved) <= allowed:
+            raise ValueError(
+                f"the checkpoint's policy has pruned outputs {[OPS_NAMES[c] for c in sorted(set(saved) - allowed)]} "
+                f"that this run doesn't prune; a pruned network can't grow its rows back"
+            )
+        # A fresh policy pruned as the checkpoint's was, so its shapes match.
+        policy = self._new_policy()
+        _load_policy(policy, state)
+        optimizer = self._new_optimizer(policy)
+        optimizer.load_state_dict(state["optimizer"])
+        self.policy, self.optimizer = policy, optimizer
+        runner.madaug_policy = policy
+        # A fork of an unpruned run (or of a less pruned one): the prune starts here, at
+        # the policy it loaded.
+        self._prune_to_run(runner, f"at the loaded policy (iter {runner.iter}),")
 
     # --- every step ----------------------------------------------------------------------
 
@@ -187,6 +263,12 @@ class MADAugPolicyHook(Hook):
         return next(self._val_iter)
 
     def before_train_iter(self, runner, batch_idx, data_batch=None) -> None:
+        # An online prune at the last probe (PruneHook, after_train_iter) takes effect
+        # here, before this step's policy update and draw.
+        self._prune_to_run(runner, f"the online prune (iter {runner.iter})")
+        trainable, frozen = self.policy.param_counts()
+        runner.message_hub.update_scalar("train/madaug_policy_params", trainable)
+        runner.message_hub.update_scalar("train/madaug_policy_frozen", frozen)
         model = unwrap(runner.model)
         with self.dp.suspended():
             data = self.dp(data_batch, training=True)
@@ -222,7 +304,32 @@ class MADAugPolicyHook(Hook):
             for key, value in stats.items():
                 runner.message_hub.update_scalar(f"train/madaug_{key}", value)
 
+        seen = {}
+
+        def features(x):
+            seen["features"] = pooled_features(model, x)
+            return seen["features"]
+
         with madaug.eval_mode(model):
-            slots = madaug.exploit(self.policy, lambda x: pooled_features(model, x), inputs, self.host, rng)
+            slots = madaug.exploit(self.policy, features, inputs, self.host, rng)
         self.dp.set_policy_slots(slots)
         runner.message_hub.update_scalar("train/madaug_augment_prob", self.host.augment_prob)
+        if self.policy.frozen_outputs:
+            self._log_prune_check(runner, seen["features"])
+
+    def _log_prune_check(self, runner, features) -> None:
+        """The prune's check on this batch's draw: p(Identity) with and without the prune
+        (equal by construction, asserted) and the expected real ops per augmented image
+        with and without it (logged)."""
+        with torch.no_grad():
+            _, pruned = madaug.predict(self.policy, features, self.host.temperature)
+            _, full = madaug.predict(self.policy, features, self.host.temperature, unpruned=True)
+        pruned, full = pruned.double().cpu().numpy(), full.double().cpu().numpy()
+        ident = OPS_NAMES.index(IDENTITY)
+        drift = float(np.abs(pruned[:, ident] - full[:, ident]).max())
+        if drift > 1e-6:
+            raise RuntimeError(f"the prune moved p(Identity) by {drift:.3g}; it must hold it")
+        hub = runner.message_hub
+        hub.update_scalar("train/madaug_identity_share", float(pruned[:, ident].mean()))
+        hub.update_scalar("train/madaug_expected_ops", float(expected_ops(pruned, self.host.k_ops).mean()))
+        hub.update_scalar("train/madaug_expected_ops_unpruned", float(expected_ops(full, self.host.k_ops).mean()))

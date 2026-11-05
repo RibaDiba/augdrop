@@ -41,11 +41,15 @@ def policy_step(
 ) -> Tuple[List[torch.Tensor], dict]:
     """The policy's gradient for one training batch (clean ``images01``, ``label``) and
     the stats worth logging. The model should be in eval (``eval_mode``), as MADAug's
-    update runs it. The policy is relaxed at T = 1, as ``explore`` does."""
+    update runs it. The policy is relaxed at T = 1, as ``explore`` does. A pruned policy
+    (``Projection.prune``) relaxes only its surviving ops and Identity, with
+    p(Identity) held (``predict``)."""
     with torch.no_grad():
         feats = features(normalize(images01))
     levels, p = predict(policy, feats, temperature=1.0)
-    mixed, labels, weights = relaxed_batch(images01, label, levels, p, ops, normalize, rng)
+    mixed, labels, weights = relaxed_batch(
+        images01, label, levels, p, ops, normalize, rng, skip=getattr(policy, "frozen_outputs", ())
+    )
 
     def train_loss(weights_):
         return soft_cross_entropy(logits(weights_, mixed), labels, weights, ignore_index)
@@ -65,7 +69,8 @@ def exploit(
 ) -> Sequence[List[Tuple[str, float]]]:
     """The training draw for one batch: the policy at the host's temperature on
     ``inputs`` (the model's input space), its mean p folded into the host's prior, and
-    the host's slots (``MADAugHost.draw``: curriculum, q, k ops, δ, signs)."""
+    the host's slots (``MADAugHost.draw``: curriculum, q, k ops, δ, signs). A pruned
+    policy's p already gives its pruned ops 0, with p(Identity) held (``predict``)."""
     with torch.no_grad():
         levels, p = predict(policy, features(inputs), host.temperature)
     p = p.double().cpu().numpy()
