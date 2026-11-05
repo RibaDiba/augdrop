@@ -35,9 +35,16 @@ order, and the positional ``overrides`` come after them, so they win:
     --random-prune-count N  prune.random=N      (Sensaug's `null` arm: N more ops drawn at
                             random before training)
     --random-prune-seed S   prune.seed=S        (default: the run's seed)
+    --random-prune-pool P   prune.pool=P        (all, Sensaug's; or probed: the draw also
+                            leaves out the ops the probe gives no row)
     --no-hold-none-prob     prune.hold_none_prob=false  (Sensaug's default: P(none) rises
                             as ops are pruned)
     --probe-pruned          prune.probe=true    (the probe still measures the pruned ops)
+    --fork-from CKPT        fork_from=<CKPT, absolute>  (start from another run's iter_<N>.pth;
+                            see the fork rule below)
+    --keep-checkpoints N [N ...]
+                            keep_checkpoints=[N,...]  (those checkpoints outlive
+                            max_keep_ckpts, hard-linked into <run>/keep/)
 
 Both ``--flag value`` and ``--flag=value`` work.
 
@@ -59,6 +66,15 @@ the config, else ``<cluster.work_root>/<run_name>``. Rules:
   the named ops, the pool, the seed, the draw, what is kept). An existing one that
   disagrees with the config's prune exits 2, so a resume can't silently prune
   different ops.
+- ``--fork-from <run>/[keep/]iter_<N>.pth`` starts a new run (a new directory, named
+  ``..._fork-i<N>``) where another run's checkpoint left off: mmengine resumes from that
+  file (iteration, optimizer, scheduler, message hub, the MADAug policy), so the two runs
+  share their first N iterations. The source run's ``dropaug.yaml`` (next to the
+  checkpoint, or one up from ``keep/``) must equal this config except in the prune, the
+  selector, the probe schedule, ``keep_checkpoints``, the host's ``policy_file`` (the
+  search-then-train continuation) and the run's own bookkeeping (``FORK_KEYS``); anything
+  else exits 2 with the keys. The fork's own ``--resume``
+  continues from its own ``last_checkpoint`` once it has one, else from ``fork_from``.
 - ``--dry-run`` stops after that, printing a summary; it needs no mmengine. A cls task
   (no cls training loop yet) exits 2 after the dry-run stage. A config error (ConfigError,
   an unknown group option, a bad override) exits 2 with the message on stderr.
@@ -155,12 +171,25 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--random-prune-count", type=int, metavar="N", help="prune.random=N: N more ops drawn at random before training")
     p.add_argument("--random-prune-seed", type=int, metavar="S", help="prune.seed=S: the random draw's seed (default the run's seed)")
     p.add_argument(
+        "--random-prune-pool",
+        choices=("all", "probed"),
+        help="prune.pool: all (Sensaug's), or probed (the draw also leaves out the ops the probe gives no row)",
+    )
+    p.add_argument(
         "--no-hold-none-prob",
         dest="no_hold_none_prob",
         action="store_true",
         help="prune.hold_none_prob=false: P(no augmentation) rises as ops are pruned (Sensaug's default)",
     )
     p.add_argument("--probe-pruned", action="store_true", help="prune.probe=true: the probe still measures the pruned ops")
+    p.add_argument("--fork-from", metavar="CKPT", help="fork_from: start a new run from another run's iter_<N>.pth")
+    p.add_argument(
+        "--keep-checkpoints",
+        nargs="+",
+        type=int,
+        metavar="N",
+        help="keep_checkpoints=[N,...]: these iterations' checkpoints outlive max_keep_ckpts (<run>/keep/)",
+    )
     p.add_argument("--dry-run", action="store_true", help="compose, check and write dropaug.yaml, then exit")
     p.add_argument("overrides", nargs="*", help="Hydra overrides, applied after the flags")
     return p
@@ -225,10 +254,19 @@ def flag_overrides(args, config_dir: str):
         out.append(f"prune.random={args.random_prune_count}")
     if args.random_prune_seed is not None:
         out.append(f"prune.seed={args.random_prune_seed}")
+    if args.random_prune_pool:
+        out.append(f"prune.pool={args.random_prune_pool}")
     if args.no_hold_none_prob:
         out.append("prune.hold_none_prob=false")
     if args.probe_pruned:
         out.append("prune.probe=true")
+    if args.fork_from:
+        path = os.path.abspath(args.fork_from)
+        if "'" in path or "\\" in path:
+            _fail(f"--fork-from {path}: a path with a quote or backslash can't be passed to Hydra")
+        out.append(f"fork_from='{path}'")
+    if args.keep_checkpoints:
+        out.append("keep_checkpoints=[" + ",".join(str(n) for n in args.keep_checkpoints) + "]")
     return out
 
 
@@ -268,6 +306,67 @@ def diff_keys(old, new, ignore=("resume",)):
     ]
 
 
+#: What a fork may change from the run it forks (``fork_problems``): its prune, its
+#: selector, when it probes, which checkpoints it keeps, and the run's own bookkeeping.
+#: Also ``host.policy_file``: the search-then-train recipe's continuation trains the
+#: trunk's checkpoint (on Faster AutoAugment's starting policy) on the policy a search
+#: then found. Key prefixes of the flattened, resolved config.
+FORK_KEYS = (
+    "prune.",
+    "selector.",
+    "choices.selector",
+    "probe.schedule.",
+    "host.probe_interval",
+    "host.probe_iters",
+    "host.control_iters",
+    "host.policy_file",
+    "keep_checkpoints",
+    "fork_from",
+    "work_dir",
+    "resume",
+)
+
+
+def fork_source(path: str) -> str:
+    """The run directory a fork's checkpoint belongs to: the checkpoint's directory, or
+    the one above it for a kept checkpoint (``<run>/keep/iter_<N>.pth``)."""
+    directory = os.path.dirname(os.path.abspath(path))
+    return os.path.dirname(directory) if os.path.basename(directory) == "keep" else directory
+
+
+def fork_problems(source, cfg) -> list:
+    """The keys where a fork's config differs from its source run's beyond ``FORK_KEYS``:
+    ``[(key, source value, fork value)]``, empty when the fork is a fork."""
+    return [
+        (key, old, new)
+        for key, old, new in diff_keys(source, cfg, ignore=())
+        if not any(key == prefix.rstrip(".") or key.startswith(prefix) for prefix in FORK_KEYS)
+    ]
+
+
+def check_fork(cfg, work_dir) -> None:
+    """Exit 2 unless ``cfg.fork_from`` is a checkpoint of another dropaug run whose config
+    this one changes only in ``FORK_KEYS``."""
+    from dropaug.config import RUN_FILE, load
+
+    path = str(cfg.fork_from)
+    if not os.path.isfile(path):
+        _fail(f"--fork-from {path} is not a file")
+    source_dir = fork_source(path)
+    if os.path.abspath(source_dir) == os.path.abspath(work_dir):
+        _fail(f"--fork-from {path} is in this run's own directory; a fork goes in a new one")
+    if not os.path.exists(os.path.join(source_dir, RUN_FILE)):
+        _fail(f"--fork-from {path}: {source_dir} holds no {RUN_FILE}, so it isn't a dropaug run to fork")
+    problems = fork_problems(load(source_dir), cfg)
+    if problems:
+        lines = "\n".join(f"    {k}: source {o!r}, fork {n!r}" for k, o, n in problems)
+        _fail(
+            f"a fork may change only the prune, the selector, the probe schedule, keep_checkpoints and "
+            f"host.policy_file; "
+            f"this config also differs from {os.path.join(source_dir, RUN_FILE)} in:\n{lines}"
+        )
+
+
 def resolve_work_dir(cfg, args) -> str:
     from dropaug.config import run_name
 
@@ -289,9 +388,12 @@ def prune_record(cfg):
     if not pruning:
         return None
     vocab = vocab_of(cfg)
+    host = host_of(cfg, pruning)
     # `kept` follows what the host realizes (autoaugment prunes ops by implication), `pruned` the config.
-    realized = host_of(cfg, pruning).pruned()
-    return pruning.record(list(vocab), realized, host=str(cfg.host.name), vocab_hash=vocab_hash(vocab))
+    realized = host.pruned()
+    # A host whose prune acts per stage says what each stage lost (faster_autoaugment).
+    extra = {"stages": host.prune_report()} if hasattr(host, "prune_report") else {}
+    return pruning.record(list(vocab), realized, host=str(cfg.host.name), vocab_hash=vocab_hash(vocab), **extra)
 
 
 def write_prune_record(cfg, work_dir) -> None:
@@ -354,6 +456,8 @@ def prepare(args):
             )
 
     warnings = check(cfg, training=True)
+    if cfg.get("fork_from"):
+        check_fork(cfg, work_dir)
     if rank0:
         for w in warnings:
             print(f"train.py: warning: {w}", file=sys.stderr)
@@ -369,7 +473,7 @@ def prepare(args):
 
 
 def summary(cfg, work_dir) -> str:
-    from dropaug.config import prune_of, run_name
+    from dropaug.config import fork_iter, prune_of, run_name
 
     pruning = prune_of(cfg)
     lines = [] if not pruning else [
@@ -379,6 +483,18 @@ def summary(cfg, work_dir) -> str:
         + f", P(none) {'held' if pruning.hold_none_prob else 'renormalized'}"
         + (", still probed" if pruning.probe else ", not probed")
     ]
+    if pruning:
+        from dropaug.config import host_of
+
+        host = host_of(cfg, pruning)
+        if hasattr(host, "prune_report"):
+            report = host.prune_report()
+            share = report["stage_share_pruned"]
+            lines.append(
+                f"stages    the prune held {max(share):.0%} of a stage's mass at most, {sum(share) / len(share):.0%} "
+                f"on average; {len(report['flagged'])} stage(s) lost over half"
+                + (" (their mass held: it went to their other ops)" if report["hold_stage_mass"] else "")
+            )
     return "\n".join(
         [
             f"run dir   {work_dir}",
@@ -390,6 +506,8 @@ def summary(cfg, work_dir) -> str:
             + (", control)" if cfg.selector.get("control") else ")"),
             f"seed      {cfg.seed}  launcher {cfg.launcher}  resume {bool(cfg.resume)}  augment {bool(cfg.augment)}",
             *lines,
+            *([f"fork      from {cfg.fork_from} (iteration {fork_iter(cfg.fork_from)})"] if cfg.get("fork_from") else []),
+            *([f"keep      checkpoints at {list(cfg.keep_checkpoints)}"] if cfg.get("keep_checkpoints") else []),
         ]
     )
 

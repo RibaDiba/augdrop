@@ -44,6 +44,16 @@ work_dir: null
 augment: true
 resume: false              # continue the run in work_dir (train.py --resume)
 launcher: none             # none | pytorch (torchrun)
+# A fork: this run starts from another dropaug run's iter_<N>.pth (train.py --fork-from),
+# as a resume does (its iteration, optimizer, scheduler and MADAug policy), in a new run
+# directory whose name ends _fork-i<N>. The run it forks must have the same config except
+# for the prune, the selector, the probe schedule and keep_checkpoints. The probe-and-prune
+# recipe forks the control run at its decision probe into pruned and random-K branches.
+fork_from: null
+# Completed iterations whose checkpoint outlives CheckpointHook's max_keep_ckpts (3): each
+# is hard-linked into <run>/keep/iter_<N>.pth when it is saved. Each must be on the
+# checkpoint grid (task.checkpoint_interval). A fork point goes here.
+keep_checkpoints: []
 
 # The static prune: ops out of training for the whole run, on any host and under any
 # selector (src/hosts/prune.py). Sensaug's --pruned-augmentations and its `null`
@@ -65,6 +75,10 @@ prune:
                            # (their rows are in aug_gradient_log.txt); the R the selector
                            # reads leaves them out either way. Post-hoc scripts/probe.py
                            # always measures every op
+  pool: all                # the random draw's pool: all (Sensaug's), or probed, which also
+                           # leaves out the ops the probe gives no row under the host's
+                           # fade (SamplePairing, the flips): no R-based selector can prune
+                           # them, so a random-K null matched to NMS mustn't either
 
 # scripts/eval.py: dropaug.eval's suite on a checkpoint.
 eval:

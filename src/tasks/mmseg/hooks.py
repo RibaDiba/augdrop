@@ -9,6 +9,9 @@
                          grows -> ``host.set_weights`` with M zeroed
     HostProgressHook     before every training step: ``host.set_step``, for a host whose
                          policy follows training progress (smartsampling_diff's annealed P)
+    KeepCheckpointHook   after CheckpointHook: hard-links the checkpoints of the listed
+                         iterations into ``work_dir/keep/``, past ``max_keep_ckpts``, so a
+                         fork (train.py ``--fork-from``) can start from one
 
 Replaces Sensaug's ``CollectGradientHook`` (grad_hook.py) and
 ``PerturbationSensitivityAnalysisHookWithGradients`` (grad_sens_analysis.py) plus the
@@ -49,6 +52,7 @@ Config::
 import json
 import math
 import os
+import shutil
 from collections.abc import Mapping
 from typing import Optional, Union
 
@@ -69,16 +73,19 @@ from selection import (
     Redundancy,
     build_selector,
     measured_red,
+    nms_analysis,
+    nms_select,
     prune_weights,
     publication,
     ramp_lambda,
+    random_null,
 )
 from vocab import get_op
 
 from ..magnitudes import probe_magnitudes
 from .backend import MMSegBackend, unwrap
 
-__all__ = ["ApplyWeightsHook", "CollectGradientHook", "HostProgressHook", "PruneHook", "host_of"]
+__all__ = ["ApplyWeightsHook", "CollectGradientHook", "HostProgressHook", "KeepCheckpointHook", "PruneHook", "host_of"]
 
 GRADIENT_LOG = "aug_gradient_log.txt"
 PROBE_SET_FILE = "probe_set.json"
@@ -545,15 +552,26 @@ class PruneHook(Hook):
     of the largest cell at this many images (``stats.null_max_bound``), and a mean
     off-diagonal cell of R far from 0.
 
+    With ``null_arm="random"`` the arm is NMS's matched null (``selection.random_null``): NMS
+    runs and is logged, then as many ops as it newly pruned are drawn at random from the
+    ops it ranked and pruned instead.
+
+    M is published as ``runner.latched_prune`` (on resume too), which a host with a policy
+    network reads to prune the network itself (MADAugPolicyHook). M only grows, so that
+    prune never has to undo itself.
+
     tau             NMS's cutoff on R_residual (``selection.TAU``, Cohen's 0.5)
     mask_within_op  the two halves of one op never suppress each other
+    null_arm, null_seed  the matched null (None, or ``"random"``) and its seed
     """
 
     priority = "LOW"
 
-    def __init__(self, tau: float = TAU, mask_within_op: bool = True):
-        # Fails at startup on a bad tau.
-        self.selector = NMS(tau=tau)
+    def __init__(
+        self, tau: float = TAU, mask_within_op: bool = True, null_arm: Optional[str] = None, null_seed: int = 0
+    ):
+        # Fails at startup on a bad tau or null.
+        self.selector = NMS(tau=tau, null_arm=null_arm, null_seed=null_seed)
         self.mask_within_op = mask_within_op
 
     def before_run(self, runner) -> None:
@@ -564,6 +582,11 @@ class PruneHook(Hook):
         if _resuming(runner) and os.path.exists(self.path):
             with open(self.path) as f:
                 saved = json.load(f)
+            if saved.get("null") != self.selector.null:
+                raise ValueError(
+                    f"{self.path} was written by an nms arm with null={saved.get('null')!r}; this run has "
+                    f"null={self.selector.null!r}"
+                )
             self.pruned, self.history = tuple(saved["pruned"]), list(saved["history"])
             print_log(f"[nms] resumed with {len(self.pruned)} ops pruned: {list(self.pruned)}", logger="current")
             # An SA host has no pdf yet; the first SA round's reweight() applies M.
@@ -573,6 +596,7 @@ class PruneHook(Hook):
             stats.reset_logs(runner.work_dir)
             if os.path.exists(self.path):
                 os.remove(self.path)
+        runner.latched_prune = tuple(self.pruned)
 
     def after_train_iter(self, runner, batch_idx, data_batch=None, outputs=None) -> None:
         sweep = getattr(runner, "probe_sweep", None)
@@ -584,9 +608,7 @@ class PruneHook(Hook):
 
         # As in ApplyWeightsHook: the pruned ops are set aside even when probe_pruned
         # measured them.
-        analysis = stats.analyze_sweep(
-            sweep, static_pruned=self.host.pruned(), residual_rank=True, bootstrap=False, n_min=0
-        )
+        analysis = nms_analysis(sweep, static_pruned=self.host.pruned())
         if is_main_process():
             stats.write_analysis(runner.work_dir, analysis)
             print_log(f"[nms] iter {iteration} ({role}): {analysis.summary()}", logger="current")
@@ -598,23 +620,41 @@ class PruneHook(Hook):
             )
             return
 
-        selection, result = self.selector.run(
-            Redundancy(analysis.names, analysis.primary, mask_within_op=self.mask_within_op),
+        selection, result = nms_select(
+            analysis,
             dict(zip(self.host.vocabulary(), self.host.base_probs())),
-            score=dict(zip(analysis.names, analysis.loss_increase)),
+            tau=self.selector.tau,
             pruned=self.pruned,
+            mask_within_op=self.mask_within_op,
         )
+        null = None
+        if self.selector.null == "random":
+            # NMS's own pass is logged; the null's draw is what gets pruned.
+            selection, chosen, drawn = random_null(
+                result, dict(zip(self.host.vocabulary(), self.host.base_probs())), seed=self.selector.null_seed, key=iteration
+            )
+            null = {"rule": self.selector.null, "seed": self.selector.null_seed, "nms_new": list(result.new), "drawn": list(drawn)}
+        else:
+            chosen = result
         # Every rank holds rank 0's M: each rank analysed its own sweep.
-        decision = [(result, selection.applied, selection.reason)]
+        decision = [(result, chosen, null, selection.applied, selection.reason)]
         broadcast_object_list(decision, src=0)
-        result, applied, reason = decision[0]
-        self.pruned = result.pruned
-        self.history.append({"iter": iteration, "new": list(result.new)})
+        result, chosen, null, applied, reason = decision[0]
+        self.pruned = chosen.pruned
+        runner.latched_prune = tuple(self.pruned)
+        self.history.append({"iter": iteration, "new": list(chosen.new), **({"null": null} if null else {})})
 
         if is_main_process():
             stats.write_json_atomic(
                 self.path,
-                {"selector": NMS.name, "tau": self.selector.tau, "pruned": list(self.pruned), "history": self.history},
+                {
+                    "selector": NMS.name,
+                    "tau": self.selector.tau,
+                    "null": self.selector.null,
+                    "null_seed": self.selector.null_seed if self.selector.null else None,
+                    "pruned": list(self.pruned),
+                    "history": self.history,
+                },
             )
             stats.append_jsonl(
                 os.path.join(runner.work_dir, stats.REDUNDANCY_LOG),
@@ -627,16 +667,25 @@ class PruneHook(Hook):
                     "mask_within_op": bool(self.mask_within_op),
                     "names": analysis.names,
                     **result.record(),
+                    **({"null": null, "pruned": list(self.pruned)} if null else {}),
                     "applied": applied,
                     "reason": reason,
                 },
             )
             suppressed = ", ".join(f"{op} (r={r:.2f} with {by})" for op, (by, r) in result.suppressed.items())
-            print_log(
-                f"[nms] iter {iteration}: pruned {suppressed or 'nothing new'} at tau={self.selector.tau:g}; "
-                f"{len(self.pruned)} pruned in all",
-                logger="current",
-            )
+            if null:
+                print_log(
+                    f"[nms] iter {iteration}: NMS would prune {suppressed or 'nothing new'} at "
+                    f"tau={self.selector.tau:g}; the random null prunes {null['drawn'] or 'nothing'} instead; "
+                    f"{len(self.pruned)} pruned in all",
+                    logger="current",
+                )
+            else:
+                print_log(
+                    f"[nms] iter {iteration}: pruned {suppressed or 'nothing new'} at tau={self.selector.tau:g}; "
+                    f"{len(self.pruned)} pruned in all",
+                    logger="current",
+                )
         # With an SA loop, the round at this iteration applies M to its fresh pdf.
         if not self.sa_driven:
             self._install(f"iter {iteration}")
@@ -717,3 +766,38 @@ class HostProgressHook(Hook):
 
     def before_train_iter(self, runner, batch_idx, data_batch=None) -> None:
         self.host.set_step(runner.iter + 1)
+
+
+@HOOKS.register_module()
+class KeepCheckpointHook(Hook):
+    """Keep the checkpoints of ``iters`` (completed iterations) past CheckpointHook's
+    ``max_keep_ckpts``: right after each is saved, ``work_dir/iter_<N>.pth`` is hard-linked
+    to ``work_dir/keep/iter_<N>.pth`` (copied where a link can't be made), and CheckpointHook
+    deleting its own copy later leaves that one. ``dropaug.config.check`` refuses an
+    iteration off the checkpoint grid; a checkpoint still missing at its iteration (a
+    ``task.cfg_options`` that moved the grid) is a warning. Rank 0 only, as mmengine saves."""
+
+    # After CheckpointHook (VERY_LOW) in after_train_iter, so the file exists.
+    priority = "LOWEST"
+
+    def __init__(self, iters=()):
+        self.iters = frozenset(int(n) for n in iters)
+
+    def after_train_iter(self, runner, batch_idx, data_batch=None, outputs=None) -> None:
+        n = runner.iter + 1
+        if n not in self.iters or not is_main_process():
+            return
+        src = os.path.join(runner.work_dir, f"iter_{n}.pth")
+        if not os.path.exists(src):
+            print_log(f"[keep] no checkpoint at {src} to keep", logger="current", level=30)
+            return
+        directory = os.path.join(runner.work_dir, "keep")
+        os.makedirs(directory, exist_ok=True)
+        dst = os.path.join(directory, f"iter_{n}.pth")
+        if os.path.exists(dst):
+            return
+        try:
+            os.link(src, dst)
+        except OSError:
+            shutil.copy2(src, dst)
+        print_log(f"[keep] kept {dst} (a fork can start here: train.py --fork-from)", logger="current")

@@ -9,3 +9,9 @@ name: nms
 lam: 1.0                   # a pruned op's weight is 1 - lam; must be 1 (this arm prunes)
 lambda_ramp: constant      # unused: the prune is all or nothing
 tau: 0.5                   # Cohen's (1988) "large" correlation, r^2 = 1/4 (FACTS D8)
+# The matched null (selection.random_null): null_arm: random prunes, at each probe, as many
+# ops as NMS newly prunes there, drawn at random from the ops NMS ranked, seeded by
+# (null_seed, iteration). NMS's own pass is still logged. The run name's arm becomes
+# nms-random<null_seed>-l1 (train.sbatch NMS_NULL / NMS_NULL_SEED).
+null_arm: null
+null_seed: 0
