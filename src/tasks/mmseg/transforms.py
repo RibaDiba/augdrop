@@ -68,7 +68,16 @@ from mmseg.registry import MODELS, TRANSFORMS
 from hosts import build_host
 from vocab import get_op
 
-from ..augment import NO_OP, POLICY_HOSTS, apply_draws, apply_slots, augment_batch, check_trainable, sample_draws
+from ..augment import (
+    NO_OP,
+    POLICY_HOSTS,
+    apply_draws,
+    apply_slots,
+    augment_batch,
+    check_trainable,
+    forbidden_ops,
+    sample_draws,
+)
 
 __all__ = ["GpuAugSegDataPreProcessor", "NO_OP", "apply_draws", "augment_batch", "sample_draws"]
 
@@ -174,7 +183,7 @@ class GpuAugSegDataPreProcessor(SegDataPreProcessor):
             if draws is None:
                 rgb01, labels = augment_batch(self.host, rgb01, labels, self.ops)
             elif training:
-                rgb01, labels = apply_slots(rgb01, labels, draws, self.ops)
+                rgb01, labels = apply_slots(rgb01, labels, draws, self.ops, forbidden_ops(self.host))
             else:
                 rgb01, labels = apply_draws(rgb01, labels, draws, self.ops)
             data["inputs"] = (rgb01 * 255.0 - mean) / std
