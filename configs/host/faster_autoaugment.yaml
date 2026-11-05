@@ -9,7 +9,9 @@ defaults:
 name: faster_autoaugment
 # The searched policy: the search's <out>/final.npz. Absolute, or relative to where the
 # entry point runs (the repo root). null is the search's starting point, which can be
-# probed with but never trained on (check_trainable refuses it).
+# probed with but never trained on (check_trainable refuses it). `initial` is the same
+# starting point, trainable: the trunk of the search-then-train recipe (train.sbatch
+# FAA_POLICY=initial), probed at 25% to decide the op set the search runs over.
 policy_file: null
 num_sub_policies: 10       # the starting point's shape only; a policy file sets its own
 operation_count: 2
@@ -19,12 +21,13 @@ control_iters: ${probe.schedule.control_iters}
 # The probe's magnitude: per image, one of the magnitudes the searched policy applies
 # each op at, weighted by how often it does. The 18 split ops go through autograd.
 # The ops with no derivative in their magnitude are faded in: Solarize's and Posterize's
-# steps, Cutout's hard edge, and the four with none (HorizontalFlip, Invert,
-# AutoContrast, Equalize). SamplePairing blends in an image of the batch, so it
-# gets an unprobed NaN row (it can't be faded either).
+# steps, Cutout's hard edge, and three of the four with none (Invert, AutoContrast,
+# Equalize). Two ops get an unprobed NaN row, so R sets them aside and no selector prunes
+# them. HorizontalFlip is out of probing and pruning: faded, its image is a ghost of two
+# frames that no one label matches. SamplePairing blends in an image of the batch, so it
+# can't be probed per image or faded.
 fade:
   ops:
-    - faster_aa.HorizontalFlip
     - faster_aa.Solarize
     - faster_aa.Posterize
     - faster_aa.Invert

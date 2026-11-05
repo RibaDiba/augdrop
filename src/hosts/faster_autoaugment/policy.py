@@ -35,6 +35,12 @@ dda's ``Policy.dda_operations`` lists TranslateY twice and no TranslateX, and le
 Cutout and SamplePairing; this searches the paper's 17 (vocab faster_aa's docstring).
 The 9 signed ops are split into _pos/_neg, each with its own weight, p and mu, where dda
 learns one mu and p per op and draws its sign at p = 0.5.
+
+**A search over a subset** (the search-then-train recipe's prune: ``names`` some of the
+26, in vocab order). Every stage then holds only those ops: their weights, p and mu are
+the policy's parameters, so it is smaller (``param_count``), and each step applies fewer
+ops. ``export`` still writes all 26 columns, the left-out ops at weight 0 and p 0 (mu at
+the middle of its range, never applied), so the host and training read it unchanged.
 """
 
 import random
@@ -192,8 +198,12 @@ class Policy(nn.Module):
     ):
         super().__init__()
         self.names = tuple(names)
-        if self.names != VOCAB_NAMES:
-            raise ValueError("the policy file format holds vocab faster_aa's ops in its order; search over those")
+        chosen = set(self.names)
+        if not self.names or self.names != tuple(n for n in VOCAB_NAMES if n in chosen):
+            raise ValueError(
+                "a policy searches vocab faster_aa's ops, or a subset of them, each once, in the vocab's order; "
+                f"got {list(self.names)[:4]}..."
+            )
         self.num_sub_policies = int(num_sub_policies)
         self.operation_count = int(operation_count)
         self.temperature = float(temperature)
@@ -222,24 +232,43 @@ class Policy(nn.Module):
         out_mask = None if mask is None else torch.cat([o[1] for o in outs])
         return out_images, out_mask
 
+    @property
+    def pruned(self) -> Tuple[str, ...]:
+        """The vocab ops this policy leaves out (a search over a subset)."""
+        return tuple(n for n in VOCAB_NAMES if n not in set(self.names))
+
+    def param_count(self) -> int:
+        """The policy's parameters: per stage, a weight and a p per op, and a mu per op
+        with a magnitude."""
+        return sum(p.numel() for p in self.parameters())
+
     @torch.no_grad()
     def export(self) -> Dict[str, object]:
-        """The policy as the host reads it (``host.load_policy``): (L, K, A) arrays of
-        each stage's op weights (the softmax), probabilities, and magnitudes in the ops'
-        units (NaN for an op with none)."""
-        shape = (self.num_sub_policies, self.operation_count, len(self.names))
-        weights = torch.empty(shape)
-        probabilities = torch.empty(shape)
+        """The policy as the host reads it (``host.load_policy``): (L, K, 26) arrays over
+        vocab faster_aa's ops, each stage's op weights (the softmax), probabilities, and
+        magnitudes in the ops' units (NaN for an op with none). An op the policy leaves
+        out has weight 0 and p 0, and mu the middle of its range."""
+        shape = (self.num_sub_policies, self.operation_count, len(VOCAB_NAMES))
+        weights = torch.zeros(shape)
+        probabilities = torch.zeros(shape)
         magnitudes = torch.full(shape, float("nan"))
+        column = {name: VOCAB_NAMES.index(name) for name in VOCAB_NAMES}
+        for name in self.pruned:
+            scale = faster_aa.POLICY_SCALES.get(faster_aa.TRANSFORMS[name][0])
+            if scale is not None:
+                magnitudes[..., column[name]] = 0.5 * float(scale)
         for l, sub in enumerate(self.sub_policies):
             for k, stage in enumerate(sub.stages):
-                weights[l, k] = stage.weights.detach().cpu()
-                for a, op in enumerate(stage.operations):
+                stage_weights = stage.weights.detach().cpu()
+                for i, op in enumerate(stage.operations):
+                    a = column[op.name]
+                    weights[l, k, a] = stage_weights[i]
                     probabilities[l, k, a] = float(op.probability)
                     if op.magnitude is not None:
                         magnitudes[l, k, a] = float(op.magnitude)
         return {
-            "ops": self.names,
+            "ops": VOCAB_NAMES,
+            "pruned": self.pruned,
             "weights": weights.double().numpy(),
             "probabilities": probabilities.double().numpy(),
             "magnitudes": magnitudes.double().numpy(),

@@ -44,6 +44,13 @@ The policy file is ``search.py``'s ``.npz`` (``save_policy`` there, ``load_polic
 Without one (``policy_file=None``) the host is dda's starting policy, every weight equal,
 every p and mu at the middle of its range: a stand-in that lets a model be probed with
 these ops, never trained on (``dropaug.config.check`` refuses it for training).
+``policy_file="initial"`` (``INITIAL``) is the same policy, asked for by name, and trains:
+the trunk of the search-then-train recipe trains on it to 25%, is probed there, and its
+prune decides the op set the search then runs over.
+
+A policy searched over a subset of the ops (``scripts/faa_search.py --prune-ops`` /
+``--random-prune``) is still a 26-column file: the ops it left out have weight and p 0 in
+every stage, so the host never applies them, and its meta lists them (``pruned_ops``).
 
 Pure numpy, like every host. The torch half (``policy.py``, ``search.py``) is imported
 only by the search.
@@ -60,6 +67,7 @@ from ..sensaug import NONE_KEY
 __all__ = [
     "FAMILY",
     "FasterAutoAugmentHost",
+    "INITIAL",
     "POLICY_FORMAT",
     "SCALES",
     "Stage",
@@ -69,6 +77,9 @@ __all__ = [
 ]
 
 FAMILY = "faster_aa"
+
+#: ``policy_file`` naming dda's starting policy as one to train on (module docstring).
+INITIAL = "initial"
 
 #: The ``format`` field of a policy file.
 POLICY_FORMAT = "dropaug.faster_autoaugment.policy"
@@ -200,12 +211,14 @@ class FasterAutoAugmentHost(AugHost):
         control_iters: Iterable[int] = (),
     ):
         self.policy_file = None if policy_file is None else str(policy_file)
-        if self.policy_file is None:
+        if self.policy_file in (None, INITIAL):
             policy = initial_policy(num_sub_policies, operation_count)
         else:
             policy = load_policy(self.policy_file)
         _check_policy(policy, self.policy_file or "the initial policy")
         self.policy_meta = dict(policy["meta"])
+        # May be trained on (tasks.augment.check_trainable): a policy file, or the starting
+        # policy asked for by name. A bare null is the probe-only stand-in.
         self.searched = self.policy_file is not None
 
         weights = policy["weights"]
@@ -272,6 +285,32 @@ class FasterAutoAugmentHost(AugHost):
         self._stage_base = stages
         self._stage = stages.copy()
         return total / total.sum()
+
+    def prune_report(self, flag_at: float = 0.5) -> Dict[str, object]:
+        """What the static prune did to each stage, for ``prune.json``: per stage (sub-policy
+        major, ``L * K`` of them), the searched mass ``M_s`` (the chance the stage applies
+        any op), the share of it the pruned ops held (``sum_{a in P} m_s(a) / M_s``), and
+        the mass it applies now. With ``hold_none_prob`` the last equals the first: the
+        pruned share went to the stage's other ops. ``flagged`` lists the stages that lost
+        more than ``flag_at`` of their mass to the prune, which now apply mostly what were
+        their next ops."""
+        before = self._applied.sum(axis=1)
+        pruned = np.array([n in self._pruned for n in self._names])
+        removed = self._applied[:, pruned].sum(axis=1)
+        share = np.divide(removed, before, out=np.zeros_like(before), where=before > 0)
+        after = self._stage_base.sum(axis=1)
+        L, K = self.num_sub_policies, self.operation_count
+        return {
+            "hold_stage_mass": bool(self._hold_stage_mass),
+            "stage_mass_before": before.round(6).tolist(),
+            "stage_share_pruned": share.round(6).tolist(),
+            "stage_mass_after": after.round(6).tolist(),
+            "flagged": [
+                {"sub_policy": s // K, "stage": s % K, "share_pruned": round(float(share[s]), 6)}
+                for s in range(L * K)
+                if share[s] > flag_at
+            ],
+        }
 
     def stage_probs(self) -> np.ndarray:
         """(L, K, A): the probability each stage applies each op now, q and the prune

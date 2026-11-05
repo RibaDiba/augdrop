@@ -109,7 +109,10 @@ set -o pipefail
 #                                   (host.policy_file). Default
 #                                   <WORK_DIR>/faa_search_<dataset>/final.npz, what
 #                                   slurm/faa_search.sbatch <dataset> writes; the run
-#                                   refuses to start without one
+#                                   refuses to start without one. FAA_POLICY=initial trains
+#                                   on the search's starting policy (every op equal, p = mu
+#                                   = 0.5): the trunk of the search-then-train recipe,
+#                                   probed at 25% before any search runs
 #   FORK_FROM=<run>/keep/iter_<N>.pth
 #                                   a fork: a new run that starts where another run's
 #                                   checkpoint left off (train.py --fork-from), named
@@ -296,12 +299,17 @@ if [ "${HOST}" = "sensaug" ]; then
     [ "${INV_AUG:-0}" = "0" ] && TRAIN_FLAGS+=(--no-inv-aug)
 fi
 if [ "${HOST}" = "faster_autoaugment" ]; then
-    FAA_POLICY="${FAA_POLICY:-${WORK_DIR}/faa_search_${DATASET}/final.npz}"
-    [ -f "${FAA_POLICY}" ] || {
-        echo "ERROR: no Faster AutoAugment policy at ${FAA_POLICY}. Search one first" >&2
-        echo "       (bash slurm/submit.sh <name> slurm/faa_search.sbatch ${DATASET}), or set FAA_POLICY." >&2
-        exit 1; }
-    extra+=("host.policy_file=$(cd "$(dirname "${FAA_POLICY}")" && pwd)/$(basename "${FAA_POLICY}")")
+    if [ "${FAA_POLICY:-}" = "initial" ]; then
+        extra+=("host.policy_file=initial")
+    else
+        FAA_POLICY="${FAA_POLICY:-${WORK_DIR}/faa_search_${DATASET}/final.npz}"
+        [ -f "${FAA_POLICY}" ] || {
+            echo "ERROR: no Faster AutoAugment policy at ${FAA_POLICY}. Search one first" >&2
+            echo "       (bash slurm/submit.sh <name> slurm/faa_search.sbatch ${DATASET}), or set FAA_POLICY" >&2
+            echo "       (FAA_POLICY=initial for the starting policy)." >&2
+            exit 1; }
+        extra+=("host.policy_file=$(cd "$(dirname "${FAA_POLICY}")" && pwd)/$(basename "${FAA_POLICY}")")
+    fi
 fi
 [ -n "${NMS_NULL:-}" ] && extra+=("selector.null_arm=${NMS_NULL}" "selector.null_seed=${NMS_NULL_SEED}")
 [ "${#PRUNE_OP_LIST[@]}" -gt 0 ] && TRAIN_FLAGS+=(--pruned-augmentations "${PRUNE_OP_LIST[@]}")

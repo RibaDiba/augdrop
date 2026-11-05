@@ -368,7 +368,7 @@ def check_trainable(host, ops) -> None:
             raise NotImplementedError(
                 f"host {host.name!r} has no searched policy (host.policy_file is null), only "
                 f"the search's starting point; run scripts/faa_search.py and set "
-                f"host.policy_file to its final.npz"
+                f"host.policy_file to its final.npz, or to 'initial' to train on the starting point"
             )
         foreign = [name for name in ops if name not in host.vocabulary()]
         if not foreign:
