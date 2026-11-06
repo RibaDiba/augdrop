@@ -89,6 +89,8 @@ from typing import Any, Optional
 from dropaug.config import (
     CONFIG_DIR,
     checkpoint_interval,
+    controller_of,
+    deepaa_search_of,
     fade_of,
     host_kwargs,
     policy_of,
@@ -374,6 +376,14 @@ def build(cfg, work_dir: str, *, launcher: str = "none", resume: bool = False):
     policy = policy_of(cfg)
     if policy is not None and cfg.augment:
         progress.append(dict(type="MADAugPolicyHook", **policy))
+    # A host whose policies come from an adversarial controller trains it every epoch.
+    controller = controller_of(cfg)
+    if controller is not None and cfg.augment:
+        progress.append(dict(type="AdvAAControllerHook", **controller))
+    # Deep AutoAugment's search in the run: at the pause, search, install, resume.
+    deepaa_search = deepaa_search_of(cfg)
+    if deepaa_search is not None and cfg.augment:
+        progress.append(dict(type="DeepAASearchHook", **deepaa_search))
     # Checkpoints a fork may start from, kept past max_keep_ckpts.
     keep = [int(n) for n in (to_python(cfg.get("keep_checkpoints")) or [])]
     kept = [dict(type="KeepCheckpointHook", iters=keep)] if keep else []

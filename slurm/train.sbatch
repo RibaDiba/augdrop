@@ -105,6 +105,16 @@ set -o pipefail
 #                                   HOLD_NONE_PROB / PROBE_PRUNED are not in it: use RUN_TAG.
 #                                   Give named ops through PRUNE_OPS, not TRAIN_ARGS, so the
 #                                   run name carries them.
+#   DEEPAA_POLICY=<path>            host deep_autoaugment only: its policy (host.policy_file).
+#                                   Default the published ImageNet one in the DeepAA
+#                                   submodule, third_party/DeepAA/policy_port/
+#                                   policy_DeepAA_imagenet_1.npz. DEEPAA_POLICY=search is
+#                                   the probe-and-prune recipe: no policy until the pause at
+#                                   host.search.at (25%), where the probe prunes and DeepAA's
+#                                   search runs in the job over what is left, then training
+#                                   resumes on it. The run name gets _deepaa-search (before
+#                                   any RUN_TAG). Budget the search in host.search.* through
+#                                   TRAIN_ARGS; the job's --time must cover it
 #   FAA_POLICY=<path>               host faster_autoaugment only: its searched policy
 #                                   (host.policy_file). Default
 #                                   <WORK_DIR>/faa_search_<dataset>/final.npz, what
@@ -244,7 +254,11 @@ for _n in "${KEEP_ITER_LIST[@]}"; do
     [[ "${_n}" =~ ^[1-9][0-9]*$ ]] || { echo "ERROR: KEEP_ITERS entry '${_n}' must be a positive integer." >&2; exit 1; }
 done
 
-EXP_NAME="${EXP_NAME:-${HOST}_${_arm}_${DATASET}_${BACKBONE}_s${SEED}${_prune:+_prune-${_prune}}${_fork:+_${_fork}}${RUN_TAG:+_${RUN_TAG}}}"
+# Deep AutoAugment searching in the run is not the published-policy run of the same arm.
+_search=""
+[ "${HOST}" = "deep_autoaugment" ] && [ "${DEEPAA_POLICY:-}" = "search" ] && _search="deepaa-search"
+
+EXP_NAME="${EXP_NAME:-${HOST}_${_arm}_${DATASET}_${BACKBONE}_s${SEED}${_prune:+_prune-${_prune}}${_fork:+_${_fork}}${_search:+_${_search}}${RUN_TAG:+_${RUN_TAG}}}"
 
 WORK_DIR="${WORK_DIR:-./experiments}"
 CLUSTER="${CLUSTER:-nexus}"
@@ -312,6 +326,19 @@ if [ "${HOST}" = "faster_autoaugment" ]; then
     fi
 fi
 [ -n "${NMS_NULL:-}" ] && extra+=("selector.null_arm=${NMS_NULL}" "selector.null_seed=${NMS_NULL_SEED}")
+if [ "${HOST}" = "deep_autoaugment" ]; then
+    if [ "${DEEPAA_POLICY:-}" = "search" ]; then
+        extra+=("host.policy_file=search")
+    else
+        DEEPAA_POLICY="${DEEPAA_POLICY:-${REPO_DIR}/third_party/DeepAA/policy_port/policy_DeepAA_imagenet_1.npz}"
+        [ -f "${DEEPAA_POLICY}" ] || {
+            echo "ERROR: no Deep AutoAugment policy at ${DEEPAA_POLICY}. Check out the DeepAA submodule" >&2
+            echo "       (git submodule update --init third_party/DeepAA), or set DEEPAA_POLICY" >&2
+            echo "       (DEEPAA_POLICY=search to search in the run)." >&2
+            exit 1; }
+        extra+=("host.policy_file=$(cd "$(dirname "${DEEPAA_POLICY}")" && pwd)/$(basename "${DEEPAA_POLICY}")")
+    fi
+fi
 [ "${#PRUNE_OP_LIST[@]}" -gt 0 ] && TRAIN_FLAGS+=(--pruned-augmentations "${PRUNE_OP_LIST[@]}")
 [ "${PRUNE_RANDOM}" != "0" ] && TRAIN_FLAGS+=(--random-prune-count "${PRUNE_RANDOM}")
 [ -n "${PRUNE_SEED:-}" ] && TRAIN_FLAGS+=(--random-prune-seed "${PRUNE_SEED}")

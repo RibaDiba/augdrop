@@ -9,7 +9,8 @@ against a bug Sensaug actually had:
     scalar_vs_vector  a scalar magnitude equals the same value given per image
     per_image         image i depends on its own magnitude alone: bumping image 0's
                       magnitude leaves the others bit-identical (for an op with no
-                      magnitude: the batched call equals one image at a time)
+                      magnitude: the batched call equals one image at a time; for a
+                      `stochastic` one, image 0's output ignores the other images)
     gradient          grad_mode "autograd" only: d(output)/d(magnitude) is (B,),
                       finite and nonzero for every image, and image 0's output has
                       exactly zero gradient w.r.t. the other images' magnitudes. An
@@ -236,6 +237,16 @@ class _Auditor:
     def per_image(self, spec: OpSpec) -> str:
         if spec.couples_images:
             return SKIP, "couples images (its value for one image depends on the batch)"
+        if not spec.has_magnitude and spec.stochastic:
+            # A per-image draw lands differently in a batch than alone, so compare
+            # image 0 across two batches whose other images differ, under one seed.
+            batched, _ = self._apply(spec, self.images, None)
+            others = self.images.clone()
+            others[1:] = 1.0 - others[1:]
+            changed, _ = self._apply(spec, others, None)
+            diff = _max_diff(batched[:1], changed[:1])
+            _expect(diff <= UNCHANGED_ATOL, f"image 0 moved by {diff:.3g} when the other images changed")
+            return "image 0 independent of the others"
         if not spec.has_magnitude:
             batched, _ = self._apply(spec, self.images, None)
             for i in range(self.batch_size):

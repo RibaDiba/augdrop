@@ -63,6 +63,7 @@ __all__ = [
     "load",
     "magnitudes_of",
     "policy_of",
+    "deepaa_search_of",
     "search_of",
     "prune_of",
     "prune_tag",
@@ -187,9 +188,10 @@ def to_python(node):
 
 
 def run_name(cfg: DictConfig) -> str:
-    """``<host>_<selector>[-l<lam>]_<dataset>_<backbone>_s<seed>[_prune-...][_fork-i<N>]``,
-    the name slurm/train.sbatch gives a run directory (``prune_tag`` and ``fork_tag`` for
-    the suffixes)."""
+    """``<host>_<selector>[-l<lam>]_<dataset>_<backbone>_s<seed>[_prune-...][_fork-i<N>]
+    [_deepaa-search]``, the name slurm/train.sbatch gives a run directory (``prune_tag`` and
+    ``fork_tag`` for the suffixes; the last for a deep_autoaugment run that searches in the
+    run, ``DEEPAA_POLICY=search``)."""
     selector = cfg.choices.get("selector", cfg.selector.name)
     null = cfg.selector.get("null_arm")
     if null:
@@ -197,7 +199,8 @@ def run_name(cfg: DictConfig) -> str:
         selector = f"{selector}-{null}{int(cfg.selector.get('null_seed', 0))}"
     arm = "none" if cfg.selector.get("control") else f"{selector}-l{float(cfg.selector.lam):g}"
     host = cfg.choices.get("host", cfg.host.name)
-    return f"{host}_{arm}_{cfg.dataset.name}_{cfg.task.backbone}_s{cfg.seed}{prune_tag(cfg)}{fork_tag(cfg)}"
+    search = "_deepaa-search" if cfg.host.get("name") == "deep_autoaugment" and cfg.host.get("policy_file") == "search" else ""
+    return f"{host}_{arm}_{cfg.dataset.name}_{cfg.task.backbone}_s{cfg.seed}{prune_tag(cfg)}{fork_tag(cfg)}{search}"
 
 
 #: mmengine's checkpoint names (``iter_<N>.pth``, ``best_mIoU_iter_<N>.pth``): N is the
@@ -283,6 +286,7 @@ def host_kwargs(cfg: DictConfig, prune=None) -> dict:
     kwargs.pop("fade", None)  # the probe's, not the host's: see fade_of
     kwargs.pop("policy", None)  # the policy hook's, not the host's: see policy_of
     kwargs.pop("search", None)  # Faster AutoAugment's search, not the host's: see search_of
+    kwargs.pop("controller", None)  # Adversarial AutoAugment's controller hook's: see controller_of
     name = kwargs.pop("name")
     if _takes_vocabulary(name):
         kwargs["vocabulary"] = list(vocab_of(cfg))
@@ -390,11 +394,38 @@ def policy_of(cfg: DictConfig) -> Optional[dict]:
     return None if block is None else dict(block)
 
 
+def controller_of(cfg: DictConfig) -> Optional[dict]:
+    """The host's ``controller:`` block (Adversarial AutoAugment's controller,
+    AdvAAControllerHook's kwargs), or None for a host without one."""
+    block = to_python(cfg.host.get("controller"))
+    return None if block is None else dict(block)
+
+
 def search_of(cfg: DictConfig) -> Optional[dict]:
     """The host's ``search:`` block (Faster AutoAugment's policy search,
     scripts/faa_search.py), or None for a host without one."""
     block = to_python(cfg.host.get("search"))
     return None if block is None else dict(block)
+
+
+#: DeepAASearchHook's own keys in Deep AutoAugment's ``search:`` block; the rest are
+#: ``deepaa.Settings``.
+_DEEPAA_HOOK_KEYS = ("at", "save_every", "seed")
+
+
+def deepaa_search_of(cfg: DictConfig) -> Optional[dict]:
+    """DeepAASearchHook's kwargs for a deep_autoaugment run that searches in the run
+    (``host.policy_file: search``), from the host's ``search:`` block, ``at`` resolved to
+    a completed iteration (a fraction of max_iters below 1, else the iteration); None for
+    any other run."""
+    if cfg.host.get("name") != "deep_autoaugment" or cfg.host.get("policy_file") != "search":
+        return None
+    block = search_of(cfg)
+    if block is None:
+        return None
+    at = float(block.get("at", 0.25))
+    block["at"] = int(round(at * int(cfg.task.max_iters))) if at < 1 else int(at)
+    return block
 
 
 def selector_spec(cfg: DictConfig) -> dict:
@@ -419,6 +450,39 @@ def magnitudes_of(magnitude):
 
 
 # --- checking -----------------------------------------------------------------------------
+
+
+def _check_deepaa_search(cfg: DictConfig, host, backend: str, selector_name: str) -> List[str]:
+    """Deep AutoAugment's search in the run (``policy_file: search``): the errors."""
+    import deepaa
+
+    errors: List[str] = []
+    block = search_of(cfg)
+    if block is None:
+        return ["host.policy_file=search needs the host's search: block (DeepAASearchHook's settings)"]
+    if backend != "mmseg":
+        errors.append(f"host.policy_file=search runs DeepAASearchHook, which is mmseg's; the task is {backend}")
+    hook = deepaa_search_of(cfg)
+    try:
+        deepaa.Settings(**{k: v for k, v in hook.items() if k not in _DEEPAA_HOOK_KEYS})
+    except (TypeError, ValueError) as error:
+        errors.append(f"host.search: {error}")
+    at, max_iters = hook["at"], int(cfg.task.max_iters)
+    interval = checkpoint_interval(cfg)
+    if not 0 < at < max_iters:
+        errors.append(f"host.search.at is iteration {at}; the search needs one inside (0, {max_iters})")
+    elif at % interval:
+        errors.append(
+            f"host.search.at is iteration {at}, off the checkpoint grid (every {interval}): a job stopped "
+            f"in the search could not resume at the pause (set task.checkpoint_interval or host.search.at)"
+        )
+    if selector_name == "nms" and host.probe_role(at) != "active":
+        errors.append(
+            f"selector nms prunes the search space at the pause, but the probe has no active probe at "
+            f"iteration {at} (probe.schedule.iters / interval)"
+        )
+    return errors
+
 
 
 def check(cfg: DictConfig, *, training: bool) -> List[str]:
@@ -567,6 +631,13 @@ def check(cfg: DictConfig, *, training: bool) -> List[str]:
                         f"(n_layers=0), since its frozen logits would need the hidden layers as they were "
                         f"at each prune (madaug.Projection.prune)"
                     )
+            if name == "deep_autoaugment" and cfg.host.get("policy_file") == "search":
+                errors.extend(_check_deepaa_search(cfg, host, backend, selector_name))
+            if controller_of(cfg) is not None and backend != "mmseg":
+                errors.append(
+                    f"host {name!r} trains its controller with AdvAAControllerHook, which is mmseg's; "
+                    f"task {choices.get('task')!r} is {backend} (set augment=false to probe only)"
+                )
             # A policy searched over a subset (scripts/faa_search.py --prune-ops / --random-prune)
             # never applies the ops it left out; the run's prune should say so, or its name and
             # prune.json don't.
@@ -577,7 +648,21 @@ def check(cfg: DictConfig, *, training: bool) -> List[str]:
                     f"host.policy_file was searched without {unlisted}, which the run's prune doesn't list: "
                     f"they are never applied, but the run name and prune.json won't say so (PRUNE_OPS=...)"
                 )
+            copies = int(getattr(host, "num_copies", 1))
+            if copies > 1 and backend != "mmseg":
+                errors.append(
+                    f"host {name!r} trains on {copies} copies of each image (num_copies), which only "
+                    f"the mmseg preprocessor makes; task {choices.get('task')!r} is {backend}"
+                )
         max_iters = int(cfg.task.max_iters)
+        search = deepaa_search_of(cfg) if cfg.augment else None
+        if search is not None and selector_name == "nms":
+            later = [i for i in range(search["at"] + 1, max_iters + 1) if host.probe_role(i) == "active"]
+            if later:
+                warnings.append(
+                    f"active probes after the search (iterations {later[:3]}{'...' if len(later) > 3 else ''}) "
+                    f"prune the searched policy online; the recipe's later probes are control_iters"
+                )
         if not any(host.should_probe(i) for i in range(1, max_iters + 1)):
             warnings.append(
                 f"host {name!r} never probes within {max_iters} iterations: no R, and the "

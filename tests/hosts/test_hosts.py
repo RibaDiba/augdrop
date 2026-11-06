@@ -7,8 +7,10 @@ import pytest
 import yaml
 
 from hosts import HOSTS, AugHost, build_host
+from hosts.adversarial_autoaugment import AdversarialAutoAugmentHost
 from hosts.augmix import AugMixDiffHost
 from hosts.autoaugment import IMAGENET_POLICY, AutoAugmentDiffHost, AutoAugmentHost, vocab_name
+from hosts.deep_autoaugment import DeepAutoAugmentHost
 from hosts.faster_autoaugment import FasterAutoAugmentHost
 from hosts.madaug import MADAugHost
 from hosts.randaugment import (
@@ -50,6 +52,8 @@ FACTORIES = {
     "autoaugment_diff": lambda: AutoAugmentDiffHost(probe_interval=1000),
     "madaug": lambda: MADAugHost(max_iters=20000, probe_interval=1000),
     "faster_autoaugment": lambda: FasterAutoAugmentHost(probe_interval=1000),
+    "deep_autoaugment": lambda: DeepAutoAugmentHost(probe_interval=1000),
+    "adversarial_autoaugment": lambda: AdversarialAutoAugmentHost(probe_interval=1000),
     "uniform": lambda: UniformHost(probe_interval=1000),
 }
 

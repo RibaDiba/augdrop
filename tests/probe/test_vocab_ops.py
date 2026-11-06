@@ -30,6 +30,8 @@ EXPECTED_METHOD = {
     "autoaugment": UNPROBED,
     "madaug": FINITE_DIFF,
     "faster_aa": AUTOGRAD,
+    "deepaa": AUTOGRAD,
+    "advaa": AUTOGRAD,
 }
 # The split families: each keeps four torchvision ops as they are.
 DIFF_FAMILIES = {"trivialaug_diff", "randaug_diff", "augmix_diff", "smartaug_diff"}
@@ -41,6 +43,11 @@ EXACT_STEPPED = {"Posterize", "Solarize"}
 # faster_aa's ops that step with the magnitude (dda gives them a straight-through
 # gradient in the search; the probe has none).
 FASTER_AA_STEPPED = {"Posterize", "Solarize", "Cutout"}
+# deepaa / advaa: PIL's ops with the signed ones split; Solarize and Posterize are
+# torchvision's (no tangent), and advaa's Cutout steps with its side. deepaa's Cutout and
+# RandomResizedCrop have no magnitude (stochastic).
+PIL_FAMILIES = {"deepaa", "advaa"}
+PIL_STEPPED = {"Posterize", "Solarize", "Cutout"}
 
 
 def test_audit_and_probe_agree_on_the_strongest_magnitude():
@@ -53,8 +60,10 @@ def test_every_op_is_measured_the_way_its_spec_says():
     for name, spec in vocab.OPS.items():
         base = name.split(".")[-1]
         expected = EXPECTED_METHOD[spec.family]
-        if base in MAGNITUDE_FREE or spec.couples_images:
+        if base in MAGNITUDE_FREE or spec.couples_images or spec.stochastic:
             expected = UNPROBED
+        elif spec.family in PIL_FAMILIES and base in PIL_STEPPED:
+            expected = FINITE_DIFF
         elif spec.family == "faster_aa" and base in FASTER_AA_STEPPED:
             expected = FINITE_DIFF
         elif spec.family in DIFF_FAMILIES and base in EXACT_STEPPED:

@@ -1,5 +1,92 @@
 # Changelog
 
+## 2026-11-05: Probe-and-prune for Deep AutoAugment and Adversarial AutoAugment
+
+Goal: the probe-and-prune recipe (train, prune, search the reduced space, train) for the
+two new methods, inside one run: train, pause, prune, resume (the user's rule). Deep
+AutoAugment is the search-then-train kind, and its search needs a model trained for a
+while and then frozen, which the run's own model at the pause is; Adversarial
+AutoAugment is the online kind, its controller learning throughout, so it prunes on the
+8-interval schedule as MADAug does. Either way the method's network shrinks and pruned
+ops are never drawn.
+
+### Changes
+
+- **Deep AutoAugment's search** (`src/deepaa/`, new): DeepAA's regularized gradient
+  matching in torch, layer by layer on a frozen model (forward-mode JVPs, or a central
+  difference), over the transforms a prune leaves (`kept_transforms`, DeepAA's
+  `available_policies`), resumable mid-layer; DeepAA's `.npz` out. Defaults are DeepAA's
+  released settings (the budget is the user's to set).
+- **Host `deep_autoaugment`:** `policy_file: search` draws nothing until
+  `install_policy` (the searched policy, the static prune applied, a q carried as its
+  ratio); `prune_report()` now uses Faster AutoAugment's keys, which train.py's summary
+  reads (a static prune on this host would have raised there); the probe schedule and a
+  `fade:` block (six ops; Flip and RandomResizedCrop unprobed).
+- **Host `adversarial_autoaugment`:** `action_mask(extra=)` for an online prune; an op the
+  installed policies don't apply takes a neutral q ratio (it was 0, so a later epoch's
+  policies could never apply it under a q); the probe schedule and a `fade:` block (six
+  ops; SamplePairing unprobed).
+- **Controller:** `Controller.prune(types)` removes a fully pruned type's rows from the
+  type head and embedding (Adam state sliced, logits scattered back), exactly the masked
+  distribution; `param_count`.
+- **Hooks:** `DeepAASearchHook` (`tasks/mmseg/deepaa_hooks.py`, new): at the pause, the
+  search over the kept transforms, `deepaa_search/` written, the policy installed and
+  checkpointed. `AdvAAControllerHook` prunes the controller to PruneHook's latched M before
+  the next step, closing the epoch early and restarting its clock; pruned checkpoints.
+- **Wiring:** `dropaug.config.deepaa_search_of` and `check()` (the search's block, mmseg,
+  `at` on the checkpoint grid, an active probe there under nms; later active probes warn);
+  `run_name` and `train.sbatch` (`DEEPAA_POLICY=search`) add `_deepaa-search`.
+- **Docs:** CLAUDE.md's recipe section, both method sections, the host and hook rows, the
+  fade note; FACTS D11, D12.
+
+### Verification
+
+On CPU (scratchpad): the forward JVP equals ∇l·t (2e-16) and a central difference; layer
+1's importance equals autograd's ∂cos/∂p (2.5e-9); Adam's step and mean − std; the model
+untouched; the pruned controller's log-probabilities equal the masked unpruned ones
+exactly; both hooks on stand-ins for mmengine / mmseg (the warmup applies nothing, the
+search fires once after the latch and installs, resume mid-search and past the pause; the
+online prune closes the epoch, slices Adam, resamples, restarts the clock; pruned
+checkpoints). The faded probe runs on both vocabularies. `train.py --dry-run` for both
+recipes. pytest: 1007 passed, 2 skipped, 1 failed (the known `randaug_diff.Solarize` grid
+tolerance). Never run on mmseg or a GPU.
+
+## 2026-11-03: Deep AutoAugment and Adversarial AutoAugment
+
+Goal: two more methods that train on mmseg, each over its own differentiable vocab family,
+true to its paper and code. Deep AutoAugment (Zheng et al., ICLR 2022) trains on its
+published ImageNet policy (its search is not ported); Adversarial AutoAugment (Zhang et al.,
+ICLR 2020; no released code) trains its LSTM controller adversarially alongside the
+segmentor, with M copies of each image. Neither is probed yet (the user's choice). Every
+departure is in CLAUDE.md's two sections.
+
+### Changes
+
+- **Vocab:** `deepaa` (DeepAA's ImageNet search space less Identity, 26 ops) and `advaa`
+  (Adversarial AutoAugment's 16 at AutoAugment's Table 6 ranges, 25 ops): PIL's ops, the
+  geometric ones from PIL's own AFFINE maps (sampled bilinearly), the signed ones split
+  into `_pos` / `_neg`; `configs/vocab/{deepaa,advaa}.yaml`. `OpSpec.stochastic` (a random op
+  with no magnitude: `deepaa.Cutout`, `deepaa.RandomResizedCrop`), with the audit's
+  `per_image` check holding image 0 fixed while the other images change. DeepAA's repo is a
+  submodule, `third_party/DeepAA`.
+- **Hosts:** `hosts/deep_autoaugment.py` reads DeepAA's own policy file (checked against a
+  port of `_get_unique_policy`), one draw per layer per image, the trainer's random mirror
+  kept. `hosts/adversarial_autoaugment.py` holds the epoch's M policies (bins over the
+  signed range, so the sign is learned) and draws a sub-policy of policy m for copy m. Both
+  are `STAGE_HOSTS`.
+- **Controller:** `src/advaa/` (the LSTM controller, REINFORCE with z-scored epoch means and
+  an entropy bonus, per-copy losses) and `tasks/mmseg/advaa_hooks.py`
+  (`AdvAAControllerHook`, from the host yaml's `controller:` block).
+- **Wiring:** `num_copies` batch augmentation in `GpuAugSegDataPreProcessor` (copy-major,
+  data samples deep-copied); `dropaug.config.controller_of` and its checks;
+  `configs/host/{deep_autoaugment,adversarial_autoaugment}.yaml`; `slurm/train.sbatch`'s
+  `DEEPAA_POLICY`.
+- **Tests:** pin tables only (`tests/hosts/test_hosts.py` FACTORIES, the registry's op count
+  176 -> 227, `tests/probe/test_vocab_ops.py`'s expected methods). The full suite passes
+  except the known `randaug_diff.Solarize` grid tolerance. The ops, both hosts, the
+  controller, the preprocessor and the hook were checked in a scratchpad (CLAUDE.md lists
+  what); none of it has run on mmseg or a GPU.
+
 ## 2026-10-26: AutoAugment trains (`autoaugment_diff`)
 
 Goal: AutoAugment as a method that trains on mmseg and is probed at its own magnitudes,

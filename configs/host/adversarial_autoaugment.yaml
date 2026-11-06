@@ -1,0 +1,44 @@
+# Adversarial AutoAugment (Zhang et al., ICLR 2020) over its 16 ops at AutoAugment's
+# Table 6 ranges (vocab advaa): an LSTM controller samples M policies an epoch (5
+# sub-policies of 2 ops, each a type and one of 10 magnitude bins), every image is trained
+# on M copies, copy m augmented by policy m, and the controller is trained by REINFORCE
+# to maximize each copy's training loss. The sampling is src/hosts/adversarial_
+# autoaugment.py, the controller src/advaa/, the per-step glue
+# tasks/mmseg/advaa_hooks.py (AdvAAControllerHook, added by the mmseg builder). mmseg only.
+defaults:
+  - override /vocab@_global_.vocab: advaa
+
+name: adversarial_autoaugment
+# M: the policies an epoch, and the copies of each image a batch holds (the batch per GPU
+# is the recipe's times M; the learning rate is unchanged, Eq. 6). The paper's 8 (§4.2).
+num_copies: 8
+num_sub_policies: 5
+ops_per_sub_policy: 2
+# The probe-and-prune recipe's online kind (the user's choice, 2026-11-05): selector nms
+# probes and prunes on the default schedule, every max_iters/8; each prune shrinks the
+# controller and resamples the epoch's policies over what is left (AdvAAControllerHook).
+probe_interval: ${probe.schedule.interval}
+probe_iters: ${probe.schedule.iters}
+control_iters: ${probe.schedule.control_iters}
+# The probe at a fixed magnitude in the recipe (probe.magnitude_mode=fixed): the 18 split
+# ops go through autograd. The ops with no derivative in their magnitude are faded in:
+# Solarize's and Posterize's steps, Cutout's hard edge, and AutoContrast, Invert and
+# Equalize. SamplePairing blends in another image of the batch, so it can't be probed per
+# image or faded: an unprobed NaN row, which R sets aside and no selector prunes.
+fade:
+  ops:
+    - advaa.Solarize
+    - advaa.Posterize
+    - advaa.AutoContrast
+    - advaa.Invert
+    - advaa.Equalize
+    - advaa.Cutout
+  at: 1.0
+# The controller's training (AdvAAControllerHook), not the host's: popped by host_kwargs.
+# The paper's §4.1.
+controller:
+  lr: 0.00035                  # Adam
+  entropy_weight: 0.00001      # the entropy bonus
+  hidden: 100                  # the one-layer LSTM's hidden size
+  embed: 32                    # its embedding size
+  epoch_iters: null            # steps per controller update; null: one pass over the train set

@@ -1,0 +1,6 @@
+# Deep AutoAugment's ImageNet search space (vocab/families/deepaa.py): its 18 ops less
+# Identity (the host's no-op), PIL's implementations, the 9 signed ops split into
+# _pos/_neg (26 ops). Solarize and Posterize step with the magnitude; AutoContrast,
+# Invert, Equalize, Flip, Cutout and RandomResizedCrop have none.
+families: [deepaa]
+exclude: []

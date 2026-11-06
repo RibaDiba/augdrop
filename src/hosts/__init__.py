@@ -6,9 +6,11 @@
 
 from typing import Iterable
 
+from .adversarial_autoaugment import AdversarialAutoAugmentHost
 from .augmix import AugMixDiffHost
 from .autoaugment import AutoAugmentDiffHost, AutoAugmentHost
 from .base import AugHost
+from .deep_autoaugment import DeepAutoAugmentHost
 from .faster_autoaugment import FasterAutoAugmentHost
 from .madaug import MADAugHost
 from .prune import PRUNE_FILE, Prune, draw_random_prune, resolve_prune
@@ -19,10 +21,12 @@ from .trivialaugment import TrivialAugmentDiffHost, TrivialAugmentHost
 from .uniform import UniformHost
 
 __all__ = [
+    "AdversarialAutoAugmentHost",
     "AugHost",
     "AugMixDiffHost",
     "AutoAugmentDiffHost",
     "AutoAugmentHost",
+    "DeepAutoAugmentHost",
     "FasterAutoAugmentHost",
     "MADAugHost",
     "RandAugmentDiffHost",
@@ -54,6 +58,8 @@ HOSTS = {
         SmartSamplingDiffHost,
         MADAugHost,
         FasterAutoAugmentHost,
+        DeepAutoAugmentHost,
+        AdversarialAutoAugmentHost,
         UniformHost,
     )
 }

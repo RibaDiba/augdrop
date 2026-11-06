@@ -6,14 +6,19 @@ AutoAugment's Invert has no magnitude, and AutoAugment's other ops are
 `randaug_default`'s, whose table torchvision's AutoAugment shares. `madaug` holds the
 two MADAug ops no other family has (Cutout, Flip); its other 14 are `randaug_default`'s
 and `autoaugment`'s. `faster_aa` is Faster AutoAugment's 17 ops (its 9 signed ones split
-into _pos/_neg), whose magnitudes come from a searched policy, not bins."""
+into _pos/_neg), whose magnitudes come from a searched policy, not bins. `deepaa` is
+Deep AutoAugment's ImageNet search space and `advaa` Adversarial AutoAugment's 16 ops
+(AutoAugment's Table 6), both PIL's ops with their signed ones split; their magnitudes
+come from their hosts' policies, not bins."""
 
 from typing import Callable, Dict, Tuple
 
 from ..op import OpSpec
 from . import (
+    advaa,
     augmix_diff,
     autoaugment,
+    deepaa,
     faster_aa,
     geometric,
     legacy_hsv,
@@ -41,6 +46,8 @@ FAMILIES: Dict[str, Tuple[OpSpec, ...]] = {
         smartaug_diff,
         madaug,
         faster_aa,
+        deepaa,
+        advaa,
     )
 }
 

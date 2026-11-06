@@ -52,6 +52,18 @@ And one draws whole stages of ``(op, magnitude)`` from a searched policy
   units, or nothing (``host.draw_stages``), applied stage by stage; geometric ops move the
   label. SamplePairing blends in an image of the batch (``couples_images``), so
   ``apply_draws`` runs it over the whole batch (below)
+- ``deep_autoaugment``: Deep AutoAugment's published policy (hosts/deep_autoaugment.py).
+  Per image, each of its K layers draws one op at its magnitude, or nothing, applied
+  layer by layer; geometric ops move the label
+- ``adversarial_autoaugment``: Adversarial AutoAugment's (hosts/adversarial_autoaugment.py).
+  Its policies come from an LSTM controller trained alongside the model, installed once an
+  epoch by its training loop (``host.set_policies``); per image, a sub-policy of its copy's
+  policy and its two ops, each at its bin's magnitude
+
+A host with ``num_copies`` M > 1 is trained on M copies of each image (Adversarial
+AutoAugment's batch augmentation, and Deep AutoAugment's BatchAug): the mmseg
+preprocessor repeats the batch M times, copy-major, before ``augment_batch``, so the
+host's ``draw_stages`` sees B * M images, image i being copy i // B.
 
 ``augment_batch`` applies whichever of the others a host has. ``check_trainable`` refuses
 every other host: the torchvision methods (randaugment, trivialaugment, autoaugment),
@@ -112,7 +124,7 @@ POLICY_HOSTS = ("madaug",)
 
 #: The hosts that draw a batch's stages of ``(op, magnitude)`` from a searched policy
 #: (``draw_stages``), the magnitude in the op's units.
-STAGE_HOSTS = ("faster_autoaugment",)
+STAGE_HOSTS = ("faster_autoaugment", "deep_autoaugment", "adversarial_autoaugment")
 
 #: Sensaug's level jitter on a pdf draw, so the pdf's discrete levels are not the
 #: only magnitudes ever trained on.
@@ -367,8 +379,13 @@ def check_trainable(host, ops) -> None:
         if not getattr(host, "searched", True):
             raise NotImplementedError(
                 f"host {host.name!r} has no searched policy (host.policy_file is null), only "
-                f"the search's starting point; run scripts/faa_search.py and set "
-                f"host.policy_file to its final.npz, or to 'initial' to train on the starting point"
+                f"the search's starting point; set host.policy_file to a policy ("
+                + (
+                    "scripts/faa_search.py's final.npz, or 'initial' to train on the starting point"
+                    if host.name == "faster_autoaugment"
+                    else "a published one, third_party/DeepAA/policy_port/"
+                )
+                + ")"
             )
         foreign = [name for name in ops if name not in host.vocabulary()]
         if not foreign:
@@ -400,6 +417,7 @@ def check_trainable(host, ops) -> None:
         + (f" with ops {foreign[:3]}..." if foreign else "")
         + ". The torchvision methods train through their differentiable hosts "
         "(trivialaugment_diff, randaugment_diff, autoaugment_diff, augmix_diff); SmartSamplingAugment through "
-        "smartsampling_diff; MADAug through madaug; Faster AutoAugment through faster_autoaugment. augment=False probes them on a clean-trained "
-        "model."
+        "smartsampling_diff; MADAug through madaug; Faster AutoAugment through faster_autoaugment; Deep AutoAugment "
+        "through deep_autoaugment; Adversarial AutoAugment through adversarial_autoaugment. augment=False probes "
+        "them on a clean-trained model."
     )
