@@ -226,6 +226,10 @@ def image_importance(
             (im, lb, w.expand(im.shape[0])) for im, lb in _sampled(task, x, y, layers[: k + 1], n, rng, generator, seed)
         )
     norm_v, norm_t = _norm(g_val), _norm(g_train)
+    if not (torch.isfinite(norm_v) and torch.isfinite(norm_t) and norm_v > 0 and norm_t > 0):
+        # No direction to match (a search image or validation batch with no labelled
+        # pixel gives a zero gradient): a NaN row, which Search.update leaves out.
+        return torch.full((len(kept),), float("nan")), float("nan")
     vt = _dot(g_val, g_train)
     scale = vt / norm_t**2
     tangent = [(gv.double() - gt.double() * scale).to(gv.dtype) for gv, gt in zip(g_val, g_train)]
@@ -280,15 +284,35 @@ class Search:
 
     def update(self, importance: Tensor) -> Dict[str, float]:
         """One Adam step of the current layer on the step's importances (n, |kept|), every
-        rank's images; moves to the next layer after ``steps_per_layer``."""
+        rank's images; moves to the next layer after ``steps_per_layer``. A row with a
+        non-finite entry (``image_importance``'s NaN row) is left out, and the record counts
+        it (``skipped_images``); with no row left the step is taken without an update, so
+        no NaN reaches the logits or Adam's state."""
         k = self.layer
         importance = importance.double()
+        valid = torch.isfinite(importance).all(dim=1)
+        skipped = int((~valid).sum())
+        importance = importance[valid]
         n = importance.shape[0]
+        layer = self.layers[k]
+        if n == 0:
+            stats = {
+                "layer": k,
+                "step": self.step,
+                "images": 0,
+                "skipped_images": skipped,
+                "policy_loss": None,
+                "entropy": layer.entropy(),
+                "identity": float(layer.probs()[0].detach()),
+                "importance_mean": None,
+            }
+            self._advance()
+            return stats
         if k == 0:
             combined, mult = importance.mean(dim=0), 0.25
         else:
             combined, mult = importance.mean(dim=0) - importance.std(dim=0, unbiased=False), float(n)
-        layer, optimizer = self.layers[k], self.optimizers[k]
+        optimizer = self.optimizers[k]
         optimizer.zero_grad(set_to_none=True)
         loss = -(combined.to(layer.logits.dtype) * layer.probs()).sum() * mult
         loss.backward()
@@ -297,15 +321,20 @@ class Search:
         stats = {
             "layer": k,
             "step": self.step,
+            "images": n,
+            "skipped_images": skipped,
             "policy_loss": float(loss.detach()),
             "entropy": layer.entropy(),
             "identity": float(layer.probs()[0].detach()),
             "importance_mean": float(combined.mean()),
         }
+        self._advance()
+        return stats
+
+    def _advance(self) -> None:
         self.step += 1
         if self.step >= self.settings.steps_per_layer:
             self.layer, self.step = self.layer + 1, 0
-        return stats
 
     def export(self) -> dict:
         return export(self.layers)
@@ -321,6 +350,19 @@ class Search:
         }
 
     def load_state_dict(self, state: dict) -> None:
+        """Resume a saved search. Refuses one saved with other settings or over another
+        space, before anything is restored: its steps would not be this search's."""
+        saved, now = dict(state.get("settings") or {}), asdict(self.settings)
+        if saved != now:
+            diff = ", ".join(
+                f"{k}: saved {saved.get(k, '<absent>')!r}, now {now.get(k, '<absent>')!r}"
+                for k in sorted(set(saved) | set(now))
+                if saved.get(k, "<absent>") != now.get(k, "<absent>")
+            )
+            raise ValueError(
+                f"the saved search ran with other settings ({diff}); restore them, or remove its "
+                f"state.pt to search afresh"
+            )
         if list(state["kept"]) != self.kept.tolist():
             raise ValueError("the saved search ran over another space (its kept transforms differ)")
         if int(len(state["layers"])) != len(self.layers):

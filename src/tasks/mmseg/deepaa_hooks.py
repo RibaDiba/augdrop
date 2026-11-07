@@ -157,8 +157,15 @@ class DeepAASearchHook(Hook):
     # --- the search ---------------------------------------------------------------------------
 
     def before_train_iter(self, runner, batch_idx, data_batch=None) -> None:
-        if int(runner.iter) != self.at or not self.host.pending:
+        if not self.host.pending or int(runner.iter) < self.at:
             return
+        if int(runner.iter) > self.at:
+            # E.g. a fork or resume from a checkpoint past the pause that holds no searched
+            # policy: the host would draw nothing for the rest of training.
+            raise RuntimeError(
+                f"[deepaa] iteration {runner.iter} is past the search's pause ({self.at}) and no "
+                f"policy is installed: the checkpoint this run started from has no {CHECKPOINT_KEY!r}"
+            )
         self._search(runner)
 
     def _loader(self, runner, split: str, batch_size: int, offset: int):
@@ -223,7 +230,8 @@ class DeepAASearchHook(Hook):
                 importance = torch.cat([r.cpu() for r in all_gather(rows.to(images01.device))])
                 cos = [c for part in all_gather(torch.tensor(cos, device=images01.device)) for c in part.cpu().tolist()]
                 stats = search.update(importance)
-                stats.update(cos_sim=float(np.mean(cos)), step_seconds=seconds, policy_params=search.param_count(), kept=len(kept))
+                finite = [c for c in cos if np.isfinite(c)]  # a skipped image's cos is NaN
+                stats.update(cos_sim=float(np.mean(finite)) if finite else float("nan"), step_seconds=seconds, policy_params=search.param_count(), kept=len(kept))
                 if is_main_process():
                     with open(log_path, "a") as f:
                         f.write(json.dumps(stats) + "\n")
