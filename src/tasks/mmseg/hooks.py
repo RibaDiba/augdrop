@@ -799,5 +799,13 @@ class KeepCheckpointHook(Hook):
         try:
             os.link(src, dst)
         except OSError:
-            shutil.copy2(src, dst)
+            # Copy beside it, then rename: an interrupted copy never leaves a partial dst,
+            # which the exists() check above would keep for good.
+            tmp = dst + ".tmp"
+            try:
+                shutil.copy2(src, tmp)
+                os.replace(tmp, dst)
+            finally:
+                if os.path.exists(tmp):
+                    os.remove(tmp)
         print_log(f"[keep] kept {dst} (a fork can start here: train.py --fork-from)", logger="current")

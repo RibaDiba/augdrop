@@ -242,12 +242,15 @@ fi
 # A fork: dropaug.config.fork_tag, spelled the same way (N from mmengine's iter_<N>.pth).
 _fork=""
 if [ -n "${FORK_FROM:-}" ]; then
-    [ -f "${FORK_FROM}" ] || { echo "ERROR: FORK_FROM=${FORK_FROM} is not a file." >&2; exit 1; }
     if ! [[ "$(basename "${FORK_FROM}")" =~ iter_([0-9]+)\.pth$ ]]; then
         echo "ERROR: FORK_FROM=${FORK_FROM} is not an mmengine iter_<N>.pth checkpoint." >&2; exit 1
     fi
     _fork="fork-i$((10#${BASH_REMATCH[1]}))"
-    FORK_FROM="$(cd "$(dirname "${FORK_FROM}")" && pwd)/$(basename "${FORK_FROM}")"
+    # Made absolute while its directory is there; whether the file must exist is decided
+    # once EXP_DIR is known (a fork resuming from its own checkpoint doesn't read it).
+    if _fork_dir="$(cd "$(dirname "${FORK_FROM}")" 2>/dev/null && pwd)"; then
+        FORK_FROM="${_fork_dir}/$(basename "${FORK_FROM}")"
+    fi
 fi
 read -r -a KEEP_ITER_LIST <<< "${KEEP_ITERS:-}"
 for _n in "${KEEP_ITER_LIST[@]}"; do
@@ -285,6 +288,11 @@ if [ -z "${ALLOW_RESUME:-}" ] && [ -f "${EXP_DIR}/last_checkpoint" ]; then
     echo "ERROR: ${EXP_DIR} already holds a checkpoint; training would resume it." >&2
     echo "       Set RUN_TAG=... for a fresh run, or ALLOW_RESUME=1 to continue it." >&2
     exit 1
+fi
+# A fork reads its source checkpoint until it has saved one of its own
+# (tasks.mmseg.config.build); resuming from that, it needs the source no more (train.py).
+if [ -n "${FORK_FROM:-}" ] && ! { [ -n "${ALLOW_RESUME:-}" ] && [ -f "${EXP_DIR}/last_checkpoint" ]; }; then
+    [ -f "${FORK_FROM}" ] || { echo "ERROR: FORK_FROM=${FORK_FROM} is not a file." >&2; exit 1; }
 fi
 
 activate_env || exit 1

@@ -74,7 +74,8 @@ the config, else ``<cluster.work_root>/<run_name>``. Rules:
   selector, the probe schedule, ``keep_checkpoints``, the host's ``policy_file`` (the
   search-then-train continuation) and the run's own bookkeeping (``FORK_KEYS``); anything
   else exits 2 with the keys. The fork's own ``--resume``
-  continues from its own ``last_checkpoint`` once it has one, else from ``fork_from``.
+  continues from its own ``last_checkpoint`` once it has one (and then checks neither the
+  source checkpoint nor its run, which may be gone), else from ``fork_from``.
 - ``--dry-run`` stops after that, printing a summary; it needs no mmengine. A cls task
   (no cls training loop yet) exits 2 after the dry-run stage. A config error (ConfigError,
   an unknown group option, a bad override) exits 2 with the message on stderr.
@@ -456,7 +457,11 @@ def prepare(args):
             )
 
     warnings = check(cfg, training=True)
-    if cfg.get("fork_from"):
+    # A fork resuming from a checkpoint of its own no longer reads fork_from
+    # (tasks.mmseg.config.build), and its config was checked against the source when it
+    # started: the source may be gone by now.
+    own_checkpoint = args.resume and os.path.exists(os.path.join(work_dir, "last_checkpoint"))
+    if cfg.get("fork_from") and not own_checkpoint:
         check_fork(cfg, work_dir)
     if rank0:
         for w in warnings:
