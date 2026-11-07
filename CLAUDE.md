@@ -775,8 +775,11 @@ without building a model. Only the sensaug method reads an SA snapshot
 
 ## Probe-and-prune on methods that train an augmentation network (the user's rule, 2026-11-04)
 
-The probe is on the task model the augmentation network trains against, never on the
-network itself (FAA's critic, MADAug's meta-gradient), at a fixed reference magnitude
+The probe is on the run's own task model, the one trained on the method's augmentations and
+reported (for an online method, the model its policy network trains against; for a
+search-then-train method, the model trained up to the pause, never the search's own
+segmentor, which in FAA is also the critic), never on the augmentation network itself
+(FAA's critic, MADAug's meta-gradient), at a fixed reference magnitude
 (`probe.magnitude_mode=fixed`, `probe.magnitude=0.5`, a strength), `probe.n_probe=500`,
 then NMS at τ = 0.5. The decision point is 25% of training: SensAug's round 4
 (`hosts/sensaug.round_fire_iters`: round r at (r+1)·max_iters/20; rounds 10 and 16 at 0.55
@@ -789,14 +792,18 @@ host keeps that (checked on every training host, static and online, 2026-11-04),
 under the job cap. Two kinds of method:
 
 **Search, then train** (Faster AutoAugment, Deep AutoAugment; the rule going forward for this
-kind: AutoAugment and Fast AutoAugment have no search in dropaug). Prune early, search the
-reduced space, continue training. Faster AutoAugment does it across jobs:
+kind: AutoAugment and Fast AutoAugment have no search in dropaug). The loop is train →
+prune → run the search → resume training (the user's rule, reaffirmed 2026-11-07): the prune
+comes from the trained model, so it precedes the search, and the search runs over what is
+left. Faster AutoAugment does it across jobs: one trunk (the train step, shared by every
+arm), then per arm a search and a fork that resumes the trunk's checkpoint:
 
 1. The trunk trains on the search's starting policy (dda's init, every op equal):
    `FAA_POLICY=initial train.sbatch faster_autoaugment <ds> none <seed>`, `KEEP_ITERS` at
    0.25·max_iters, and in `TRAIN_ARGS` `probe.magnitude_mode=fixed probe.n_probe=500
-   probe.schedule.interval=null 'probe.schedule.iters=[...]'` at 0.25 (and 0.55 / 0.85 for
-   Jaccard). The probe at 0.25 is on the weights of `iter_<N>.pth`: the probe hook runs
+   probe.schedule.interval=null probe.schedule.iters=[...]` at 0.25 (and 0.55 / 0.85 for
+   Jaccard; no quotes and no spaces in the list: `split_args` splits on whitespace and
+   keeps quotes). The probe at 0.25 is on the weights of `iter_<N>.pth`: the probe hook runs
    before CheckpointHook in `after_train_iter`, and the probe changes no weight.
 2. `scripts/nms_prune.py --work-dir <trunk> --iter <N>` → P (CPU, as soon as the trunk
    passes N).
@@ -814,7 +821,7 @@ Deep AutoAugment does it in one run (the user's rule, 2026-11-05: train, pause, 
 resume), since its search freezes a model trained for a while (`pretrain()`), which the run's
 own model at the pause is: `DEEPAA_POLICY=search train.sbatch deep_autoaugment <ds> <arm>
 <seed>`, `TRAIN_ARGS` with `probe.magnitude_mode=fixed probe.n_probe=500
-probe.schedule.interval=null 'probe.schedule.iters=[<0.25·max_iters>, ...]'` (later ones
+probe.schedule.interval=null probe.schedule.iters=[<0.25·max_iters>,...]` (later ones
 in `probe.schedule.control_iters`, for Jaccard) and the search's budget in `host.search.*`.
 Until the pause the host applies nothing (DeepAA pretrains on its default augmentation
 only); at it the probe gives R, PruneHook latches M, `DeepAASearchHook` searches the

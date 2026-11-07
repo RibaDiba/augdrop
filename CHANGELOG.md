@@ -1,5 +1,35 @@
 # Changelog
 
+## 2026-11-07: Review fixes (CodeRabbit)
+
+Goal: the still-valid findings of the PR review, each checked against the code first.
+
+### Changes
+
+- **DeepAA search:** a resumed search refuses a `state.pt` saved with other settings
+  (before anything is restored). An image with a zero gradient (no labelled pixel) gets a
+  NaN importance row and no JVP pass; `Search.update` leaves non-finite rows out
+  (`images` / `skipped_images` in the log) and takes no Adam step when none is left.
+  `DeepAASearchHook` raises if training passes the pause with no policy installed, where
+  the host would have drawn nothing for the rest of the run.
+- **MADAug:** `expected_ops`' `_p_drawn` is a dynamic program over the sets drawn, not a
+  recursion over draw orders (equal to it to 2e-15; usable at any `k_ops`).
+- **Forks:** a fork resuming from its own `last_checkpoint` no longer needs its source
+  checkpoint or run (`train.py`, `train.sbatch`). `KeepCheckpointHook`'s copy fallback
+  writes a temporary file and renames it, so it never leaves a partial checkpoint.
+- **Docs:** `TRAIN_ARGS` list overrides without quotes or spaces (`split_args` keeps
+  quotes); the search-then-train loop stated as train → prune → search → resume, the probe
+  on the run's own model, never FAA's search segmentor (the finding to probe that one was
+  declined).
+- **Tests:** `tests/selection/test_nms_null.py`, `random_null`'s draw by `(seed, key)`.
+
+### Verification
+
+pytest 1011 passed, the known `randaug_diff.Solarize` grid failure aside (it fails on the
+commit before too). The search changes were checked on CPU (scratchpad): a NaN or empty
+step leaves the logits and Adam untouched, a settings change is refused, a zero-gradient
+image skips its JVPs. Never run on mmseg or a GPU.
+
 ## 2026-11-05: Probe-and-prune for Deep AutoAugment and Adversarial AutoAugment
 
 Goal: the probe-and-prune recipe (train, prune, search the reduced space, train) for the
