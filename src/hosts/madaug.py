@@ -147,19 +147,36 @@ def expected_ops(p, k: int) -> np.ndarray:
 
 
 def _p_drawn(row: np.ndarray, target: int, k: int) -> float:
-    """P(``target`` is among ``k`` draws without replacement from ``row``)."""
+    """P(``target`` is among ``k`` draws without replacement from ``row``), each draw in
+    proportion to what is left. A dynamic program over the sets of other entries drawn
+    before ``target``: each set's probability summed over its draw orders, so a set is
+    visited once, not once per order (at most 2^16 sets at MADAug's 17 outputs)."""
     if k <= 0 or row[target] <= 0:
         return 0.0
-    total = float(row[target])
-    if k == 1:
-        return total
-    for j in np.flatnonzero(row):
-        if j == target:
-            continue
-        rest = row.copy()
-        rest[j] = 0.0
-        total += float(row[j]) * _p_drawn(rest / rest.sum(), target, k - 1)
-    return total
+    others = [int(j) for j in np.flatnonzero(row) if j != target]
+    if k > len(others):
+        return 1.0
+    w = np.asarray(row, dtype=np.float64)
+    total, w_target = float(w.sum()), float(w[target])
+    # bitmask over `others` -> (P(exactly these drawn first, in any order), their mass)
+    layer = {0: (1.0, 0.0)}
+    p = 0.0
+    for depth in range(k):
+        nxt = {}
+        for drawn, (prob, mass) in layer.items():
+            left = total - mass
+            p += prob * w_target / left
+            if depth == k - 1:
+                continue
+            for i, j in enumerate(others):
+                bit = 1 << i
+                if drawn & bit:
+                    continue
+                key = drawn | bit
+                old = nxt.get(key, (0.0, mass + float(w[j])))[0]
+                nxt[key] = (old + prob * float(w[j]) / left, mass + float(w[j]))
+        layer = nxt
+    return p
 
 
 def perturb_level(level: np.ndarray, delta: float, rng: np.random.Generator) -> np.ndarray:
