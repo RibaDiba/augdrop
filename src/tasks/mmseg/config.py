@@ -26,6 +26,10 @@ dataset) is the base, and the builder fills in everything the yaml groups own:
                ``SubsetTestLoop``. Any other host keeps mmengine's stock loops
     task/      max_iters, val and checkpoint intervals, AMP, ``cfg_options`` (dotted
                mmengine keys, as mmseg's ``--cfg-options``, merged last)
+    fork_from / keep_checkpoints
+               a fork resumes from ``fork_from`` until it has a checkpoint of its own;
+               ``keep_checkpoints`` adds ``KeepCheckpointHook`` (LOWEST), which hard-links
+               those iterations' checkpoints into ``<run>/keep/``
     cluster/   ``pretrained_cache``: backbone ``Pretrained`` URLs become local paths
 
 Glue only: nothing here computes. Importing the module needs neither mmengine nor mmseg
@@ -82,7 +86,18 @@ import copy
 import os
 from typing import Any, Optional
 
-from dropaug.config import CONFIG_DIR, fade_of, host_kwargs, policy_of, prune_of, selector_spec, to_python
+from dropaug.config import (
+    CONFIG_DIR,
+    checkpoint_interval,
+    controller_of,
+    deepaa_search_of,
+    fade_of,
+    host_kwargs,
+    policy_of,
+    prune_of,
+    selector_spec,
+    to_python,
+)
 
 __all__ = ["build", "localize_pretrained_checkpoint"]
 
@@ -194,9 +209,15 @@ def build(cfg, work_dir: str, *, launcher: str = "none", resume: bool = False):
 
     ``resume`` continues the run in ``work_dir`` (``cfg.resume = True``, ``load_from =
     None``: mmengine finds ``last_checkpoint``), and puts the SA loop's pre-train round
-    on, as Sensaug did, since the host's q is not saved in checkpoints. Raises
-    ``ValueError`` on a config the loops would refuse hours in."""
+    on, as Sensaug did, since the host's q is not saved in checkpoints. A fork
+    (``cfg.fork_from``) whose directory has no ``last_checkpoint`` yet is a resume from
+    ``fork_from`` (``resume = True``, ``load_from = fork_from``); once it has saved one, it
+    resumes like any run. Raises ``ValueError`` on a config the loops would refuse hours in."""
     from mmengine.config import Config
+
+    fork_from = cfg.get("fork_from")
+    forking = bool(fork_from) and not os.path.exists(os.path.join(work_dir, "last_checkpoint"))
+    resume = bool(resume) or forking
 
     task = to_python(cfg.task)
     if task.get("backend", "mmseg") != "mmseg":
@@ -266,12 +287,12 @@ def build(cfg, work_dir: str, *, launcher: str = "none", resume: bool = False):
 
     hooks = out.default_hooks
     hooks.logger.interval = min(200, max_iters)
-    hooks.checkpoint.interval = max(1, int(task.get("checkpoint_interval") or max_iters // 20))
+    hooks.checkpoint.interval = checkpoint_interval(cfg)
     hooks.checkpoint.save_best = "mIoU"
     hooks.checkpoint.max_keep_ckpts = 3
 
     out.resume = bool(resume)
-    out.load_from = None if resume else out.get("load_from")
+    out.load_from = str(fork_from) if forking else (None if resume else out.get("load_from"))
 
     if task.get("amp"):
         wrapper = out.optim_wrapper.type
@@ -337,6 +358,8 @@ def build(cfg, work_dir: str, *, launcher: str = "none", resume: bool = False):
             type="PruneHook",
             tau=selector["selector"].get("tau", 0.5),
             mask_within_op=analysis.get("mask_within_op", True),
+            null_arm=selector["selector"].get("null_arm"),
+            null_seed=selector["selector"].get("null_seed", 0),
         )
     else:
         weights = dict(
@@ -353,10 +376,21 @@ def build(cfg, work_dir: str, *, launcher: str = "none", resume: bool = False):
     policy = policy_of(cfg)
     if policy is not None and cfg.augment:
         progress.append(dict(type="MADAugPolicyHook", **policy))
+    # A host whose policies come from an adversarial controller trains it every epoch.
+    controller = controller_of(cfg)
+    if controller is not None and cfg.augment:
+        progress.append(dict(type="AdvAAControllerHook", **controller))
+    # Deep AutoAugment's search in the run: at the pause, search, install, resume.
+    deepaa_search = deepaa_search_of(cfg)
+    if deepaa_search is not None and cfg.augment:
+        progress.append(dict(type="DeepAASearchHook", **deepaa_search))
+    # Checkpoints a fork may start from, kept past max_keep_ckpts.
+    keep = [int(n) for n in (to_python(cfg.get("keep_checkpoints")) or [])]
+    kept = [dict(type="KeepCheckpointHook", iters=keep)] if keep else []
     out.custom_hooks = list(out.get("custom_hooks") or []) + progress + [
         dict(type="CollectGradientHook", **collect),
         weights,
-    ]
+    ] + kept
     # merge into the task's own custom_imports (convnext, vitsam: mmpretrain.models)
     existing = out.get("custom_imports") or {}
     imports = existing.get("imports", [])

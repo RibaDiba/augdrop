@@ -1,3 +1,6 @@
 [submodule "third_party/Sensaug"]
 	path = third_party/Sensaug
 	url = https://github.com/RibaDiba/SensAug
+[submodule "third_party/DeepAA"]
+	path = third_party/DeepAA
+	url = https://github.com/AIoT-MLSys-Lab/DeepAA

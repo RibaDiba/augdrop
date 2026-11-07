@@ -1,0 +1,62 @@
+# Deep AutoAugment (Zheng et al., ICLR 2022) over its ImageNet search space (vocab deepaa):
+# the published policy's K layers, each a distribution over 139 (op, magnitude) transforms,
+# applied in turn to every image (one draw per layer): the published policy, or one
+# searched in the run (policy_file: search, src/deepaa/). The host is
+# src/hosts/deep_autoaugment.py.
+# Trainable: the mmseg preprocessor applies these ops on GPU.
+defaults:
+  - override /vocab@_global_.vocab: deepaa
+
+name: deep_autoaugment
+# DeepAA's own policy file (save_policy's .npz). Absolute, or relative to where the entry
+# point runs (the repo root). The published ImageNet policies are in the DeepAA submodule
+# (git submodule update --init third_party/DeepAA): imagenet_1 (its ImageNet config's) and
+# imagenet_2. null is DeepAA's identity-initialized starting point, never trained on.
+# `search` is the probe-and-prune recipe (the user's choice, 2026-11-05; train.sbatch
+# DEEPAA_POLICY=search): no policy until the pause at search.at, where the probe prunes,
+# DeepAASearchHook searches the transforms left on the frozen model, and training resumes
+# on the searched policy.
+policy_file: third_party/DeepAA/policy_port/policy_DeepAA_imagenet_1.npz
+# The trainer flips the five geometric ops' sign at p = 0.5 (deep_autoaugment.py,
+# random_mirror = True), which the paper does not mention; false applies the searched sign.
+random_mirror: true
+# Copies of each image per batch, each drawn independently. 1 is DeepAA's single-GPU
+# configs; its ImageNet config trains 8 (every worker on the same batch: BatchAug).
+num_copies: 1
+probe_interval: ${probe.schedule.interval}
+probe_iters: ${probe.schedule.iters}
+control_iters: ${probe.schedule.control_iters}
+# The probe at a fixed magnitude in the recipe (probe.magnitude_mode=fixed): the 18 split
+# ops go through autograd. The ops with no derivative in their magnitude are faded in:
+# Solarize's and Posterize's steps, and AutoContrast, Invert, Equalize and Cutout (no
+# magnitude). Flip and RandomResizedCrop are out of probing and pruning: faded, a flipped
+# or cropped image is a ghost of two frames that no one label matches; they get an
+# unprobed NaN row, which R sets aside and no selector prunes.
+fade:
+  ops:
+    - deepaa.Solarize
+    - deepaa.Posterize
+    - deepaa.AutoContrast
+    - deepaa.Invert
+    - deepaa.Equalize
+    - deepaa.Cutout
+  at: 1.0
+# The search in the run (policy_file: search; DeepAASearchHook), not the host's: popped by
+# host_kwargs. Defaults are DeepAA's released settings (the README's commands), which on a
+# segmentor at a full crop take hundreds of GPU-hours: the hook logs the pass counts, and
+# every key here is a knob. The search follows the probe at `at` (a fraction of max_iters
+# below 1, else an iteration on the checkpoint grid).
+search:
+  at: 0.25
+  layers: 5                 # K: the published ImageNet policies' (the README searches 6)
+  steps_per_layer: 1024     # --search_bno (the paper says 512)
+  images_per_step: 16       # --train_same_labels, over every rank
+  val_per_image: 64         # each search image's validation batch (search_policy's val_bs)
+  exp_g: 16                 # --EXP_G: layer-k JVP copies per image
+  exp_gt_factor: 4          # --EXP_gT_factor: layer-k gradient copies, times the kept transforms
+  policy_lr: 0.025          # --policy_lr (Adam)
+  chunk: 16                 # images a pass (_PARALLEL_BATCH_small)
+  jvp: forward              # or finite_diff where the segmentor lacks forward-mode AD
+  fd_eps: 0.01
+  save_every: 32            # search steps between saves of its state (resume mid-search)
+  seed: 0

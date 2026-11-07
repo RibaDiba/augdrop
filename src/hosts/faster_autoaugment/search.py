@@ -35,11 +35,17 @@ ones the first.
 
 The search does not know mmseg: ``scripts/faa_search.py`` builds the segmentor and the
 data. ``save_policy`` writes what the host reads (``host.load_policy``).
+
+A policy over a subset of the ops (``Policy(names=...)``, the search-then-train recipe's
+prune) searches only those; ``save_policy`` records the rest as ``meta_pruned_ops``.
+``search_log.jsonl`` carries ``step_seconds`` (mean wall time of a step over the window)
+and ``policy_params``, the size and cost the prune changes.
 """
 
 import json
 import os
 import tempfile
+import time
 from dataclasses import asdict, dataclass
 from typing import Callable, Dict, Iterable, Optional, Tuple
 
@@ -211,6 +217,9 @@ def save_policy(path: str, policy: Policy, **meta) -> str:
         "magnitudes": exported["magnitudes"],
         "meta_temperature": np.array(policy.temperature),
         "meta_bernoulli_temperature": np.array(policy.bernoulli_temperature),
+        # The ops the search left out, space-separated ("" for a search over all of them).
+        "meta_pruned_ops": np.array(" ".join(exported["pruned"])),
+        "meta_policy_params": np.array(policy.param_count()),
     }
     for key, value in meta.items():
         fields[f"meta_{key}"] = np.array(value if isinstance(value, (int, float, bool)) else str(value))
@@ -251,15 +260,29 @@ def search(
     policy_opt = torch.optim.Adam(policy.parameters(), lr=config.policy_lr, betas=config.betas)
     meta = dict(meta or {})
     log_path = None if out_dir is None else os.path.join(out_dir, "search_log.jsonl")
+    params = policy.param_count()
     if out_dir is not None:
         os.makedirs(out_dir, exist_ok=True)
         with open(os.path.join(out_dir, "search_config.json"), "w") as f:
-            json.dump({"search": asdict(config), "meta": meta}, f, indent=2, default=str)
+            json.dump(
+                {
+                    "search": asdict(config),
+                    "meta": meta,
+                    "ops": list(policy.names),
+                    "pruned_ops": list(policy.pruned),
+                    "policy_params": params,
+                },
+                f,
+                indent=2,
+                default=str,
+            )
+    log(f"policy over {len(policy.names)} ops ({len(policy.pruned)} left out): {params} parameters")
 
     step = 0
     for epoch in range(1, config.epochs + 1):
         window: Dict[str, list] = {}
         for images01, label in epoch_batches(epoch):
+            started = time.perf_counter()
             losses = search_step(
                 model,
                 policy,
@@ -271,13 +294,20 @@ def search(
                 optimizers=(main_opt, policy_opt),
                 config=config,
             )
+            # search_step returns python floats (.item()), so the step's GPU work is done.
+            seconds = time.perf_counter() - started
             step += 1
-            for key, value in losses.items():
-                window.setdefault(key, []).append(value)
             if not all(np.isfinite(v) for v in losses.values()):
                 raise FloatingPointError(f"non-finite search loss at epoch {epoch}, step {step}: {losses}")
+            for key, value in {**losses, "step_seconds": seconds}.items():
+                window.setdefault(key, []).append(value)
             if step % config.log_interval == 0:
-                record = {"epoch": epoch, "step": step, **{k: float(np.mean(v)) for k, v in window.items()}}
+                record = {
+                    "epoch": epoch,
+                    "step": step,
+                    **{k: float(np.mean(v)) for k, v in window.items()},
+                    "policy_params": params,
+                }
                 log(json.dumps(record))
                 if log_path is not None:
                     with open(log_path, "a") as f:

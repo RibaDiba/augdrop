@@ -10,6 +10,12 @@ which takes d pixel / d λ_j = 1 in the model's normalized input space. Identity
 output is the image. The ops run at the policy's levels with no δ perturbation and with
 a random sign on the geometric ones, as ``explore`` calls ``apply_augment``.
 
+**A pruned op** (``skip``: the policy's pruned outputs, ``Projection.prune``) is neither
+applied nor blended. Its p is 0 there anyway, so the relaxed batch is the same, minus its
+no-grad op application and its label term. The blend is one image per input whatever the op
+count, so the model's passes (the virtual step, the Hessian-vector product) cost the same
+after a prune.
+
 Two departures from the paper, both from MADAug's own code or forced by segmentation:
 
 - **One op per term.** The paper's Eq. 6 blends pairs (k = 2, 17 x 16 composed images per
@@ -22,7 +28,7 @@ Two departures from the paper, both from MADAug's own code or forced by segmenta
   is, so they share one term.
 """
 
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -44,11 +50,13 @@ def relaxed_batch(
     ops: Dict,
     normalize: Callable[[torch.Tensor], torch.Tensor],
     rng: np.random.Generator,
+    skip: Iterable[int] = (),
 ) -> RelaxedBatch:
     """The relaxed batch for clean ``images01`` ([0, 1], (B, 3, H, W)) and ``label``
     ((B, 1, H, W), or None), at the policy's ``levels`` and ``p`` ((B, 17), MADAug's
     order, with grad). ``ops`` maps vocab names to OpSpecs; ``normalize`` takes [0, 1]
-    images into the model's input space.
+    images into the model's input space. ``skip`` lists policy outputs (MADAug's order)
+    left out: the pruned ops, whose p is 0.
 
     Returns the blended inputs, the distinct labels (index 0 the unmoved one) and each
     image's weight on each, which ``soft_cross_entropy`` takes."""
@@ -57,7 +65,15 @@ def relaxed_batch(
     mixed = torch.zeros_like(images01)
     labels: List[Optional[torch.Tensor]] = [label]
     weights: List[torch.Tensor] = [torch.zeros_like(p[:, 0])]
+    skip = {int(j) for j in skip}
     for j, op in enumerate(OPS_NAMES):
+        if j in skip:
+            if op == IDENTITY:
+                raise ValueError("Identity is the no-op; it can't be skipped")
+            # The random sign is still drawn, so the other ops' signs don't depend on the prune.
+            if op in SIGNED:
+                rng.random(images01.shape[0])
+            continue
         if op == IDENTITY:
             out, out_label = images01, label
         else:

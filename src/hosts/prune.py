@@ -55,6 +55,9 @@ class Prune:
     ops             every pruned op (named and drawn), in vocabulary order
     hold_none_prob  P(no augmentation) is held fixed (``AugHost.prune``)
     probe           the in-training probe still measures the pruned ops
+    pool_rule       ``"all"`` (Sensaug's pool) or ``"probed"``: the draw also left out the
+                    ops the probe gives no row, which no R-based selector can prune, so a
+                    random-K null removes K ops NMS could have removed
     """
 
     named: Tuple[str, ...] = ()
@@ -65,6 +68,7 @@ class Prune:
     ops: Tuple[str, ...] = ()
     hold_none_prob: bool = True
     probe: bool = False
+    pool_rule: str = "all"
 
     def __bool__(self) -> bool:
         return bool(self.ops)
@@ -77,6 +81,8 @@ class Prune:
         which defaults to ``ops``. They differ on AutoAugment, where dropping the
         sub-policies that apply a pruned op can leave another op with none."""
         pruned = set(self.ops if realized is None else realized)
+        # Only when it isn't Sensaug's pool, so a prune.json written before the key reads the same.
+        pool_rule = {} if self.pool_rule == "all" else {"pool_rule": self.pool_rule}
         return {
             "named": list(self.named),
             "random": self.random,
@@ -87,6 +93,7 @@ class Prune:
             "kept": [n for n in vocabulary if n not in pruned],
             "hold_none_prob": self.hold_none_prob,
             "probe": self.probe,
+            **pool_rule,
             **extra,
         }
 
@@ -106,11 +113,13 @@ def resolve_prune(
     exclude: Iterable[str] = (),
     hold_none_prob: bool = True,
     probe: bool = False,
+    pool_rule: str = "all",
 ) -> Prune:
     """The prune ``ops`` (by name) and ``random`` (a count) describe on ``vocabulary``.
 
-    ``exclude`` lists ops the run keeps out of training already; a random draw never
-    spends a prune on one. Raises ValueError on a name outside the vocabulary, a
+    ``exclude`` lists ops a random draw never spends a prune on: the ops the run keeps
+    out of training already, and under ``pool_rule="probed"`` the ops the probe gives no
+    row (the caller works them out; this only records the rule). Raises ValueError on a name outside the vocabulary, a
     prune of every op, a count with no seed, or a count that would empty the pool."""
     vocabulary = tuple(str(n) for n in vocabulary)
     named_set = {str(n) for n in ops}
@@ -136,8 +145,8 @@ def resolve_prune(
         if count >= len(pool):
             raise ValueError(
                 f"prune.random={count} would leave no op to train on: only {len(pool)} are "
-                f"eligible (the vocabulary minus prune.ops {list(named)} and the ops the run "
-                f"already excludes {sorted(set(exclude) & set(vocabulary))}): {list(pool)}"
+                f"eligible (the vocabulary minus prune.ops {list(named)} and the ops the draw "
+                f"leaves out {sorted(set(exclude) & set(vocabulary))}): {list(pool)}"
             )
         drawn = draw_random_prune(pool, count, seed)
     else:
@@ -153,4 +162,5 @@ def resolve_prune(
         ops=tuple(n for n in vocabulary if n in pruned),
         hold_none_prob=bool(hold_none_prob),
         probe=bool(probe),
+        pool_rule=str(pool_rule),
     )

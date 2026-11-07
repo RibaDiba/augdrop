@@ -69,6 +69,13 @@ class OpSpec:
                  other images (SamplePairing blends in a partner). Its value for an
                  image is not a property of that image, so the probe gives it an
                  "unprobed" NaN row, and training applies it over the whole batch.
+    stochastic   True for an op with no magnitude that draws its own randomness per
+                 image on every call (Deep AutoAugment's RandResizeCrop, its fixed-size
+                 Cutout). One image's draw depends on where it sits in the batch's RNG
+                 stream, so the audit checks it is independent of the other images'
+                 pixels instead of comparing a batched call with one image at a time.
+                 An op with a magnitude is checked by bumping it, which a per-image draw
+                 passes, so it never needs this.
     """
 
     name: str
@@ -82,6 +89,7 @@ class OpSpec:
     fn: OpFn = field(repr=False, compare=False)
     tangent: Optional[TangentFn] = field(default=None, repr=False, compare=False)
     couples_images: bool = False
+    stochastic: bool = False
 
     def __post_init__(self):
         if self.kind not in KINDS:
@@ -106,6 +114,8 @@ class OpSpec:
                     f"{self.name}: identity_at {self.identity_at} is outside "
                     f"mag_range {self.mag_range}"
                 )
+        if self.stochastic and self.mag_range is not None:
+            raise ValueError(f"{self.name}: stochastic is for ops with no magnitude")
         if self.tangent is not None and (self.mag_range is None or self.warps_label):
             raise ValueError(
                 f"{self.name}: only a photometric op with a magnitude can carry a tangent"

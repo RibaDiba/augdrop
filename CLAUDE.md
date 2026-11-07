@@ -49,6 +49,8 @@ returns a report.
 | `smartaug_diff` | 21 | `smartaug_diff.py`: SmartAugment's Table 2 (Negassi, Wagner & Reiterer 2022), its 9 signed ops split via `split_specs`; AutoContrast, Equalize and Solarize are `randaug_default`'s. No code was released, so `BINS` (levels 0 to 30) is a reconstruction: geometric `hi·b/30`; enhance factor `0.1 + 1.8·b/30`, `_neg` below level 15 and `_pos` from it (the direction follows the level, not a random sign); Solarize threshold `256·b/30` (RandAugment's code; AutoAugment's and AugMix's run the other way). No test of the bins | Table 2's ranges, in `augmix_diff`'s units |
 | `madaug` | 2 | `madaug.py`: the two MADAug ops no other family has, in torch, `grad_mode="none"`. `Cutout` is MADAug/AdaAug's `CutoutAbs`: a square of side v·width, fill (125, 123, 114), PIL's inclusive corners, its centre uniform on (1, w] as `np.random.uniform(w)` draws it (ported as is), photometric (the label stays). `Flip` is `PIL.ImageOps.mirror`, geometric, no magnitude. MADAug's other 14 ops are `randaug_default`'s 13 and `autoaugment.Invert` (`configs/vocab/madaug.yaml`). Checked by hand against MADAug's own PIL `operation.py` at levels 0.1 to 0.9 (scratchpad, no test): Cutout, Flip, Shear, Solarize, Posterize, Brightness, Sharpness, Equalize and Invert are pixel-identical; Rotate differs on < 0.05% of pixels (the frame's edge); Contrast and Color by one 8-bit level on 19-62% of pixels, AutoContrast on 7%; Translate by 1 px when the shift's fraction is ≥ 0.5 (torchvision truncates, PIL rounds) | Cutout: a fraction of the width, [0, 0.2] |
 | `faster_aa` | 26 | `faster_aa.py`: Faster AutoAugment's 17 ops (the paper's Table 2), dda's `functional.py` bodies (github.com/moskomule/dda) in dda's units, ported from kornia 0.3.1 to 0.8.2. The 9 signed ops are split into `_pos` / `_neg` (in the policy search too, a departure from the paper's random sign). Geometric: dda's kornia matrices (shear about the top-left pixel, translate a fraction of W/H, rotate about the center), label moved as in `geometric`; HorizontalFlip is `madaug.flip`. Enhance ops: dda's blends, factor 1 ± m. Solarize, Posterize and Cutout are `grad_mode="none"`; Cutout is Fast AutoAugment's (`madaug.cutout`, the search space the paper says it shares). `SamplePairing` (dda's, partner from a `randperm` of the batch, possibly itself) has `couples_images=True`. Flagged against dda: TranslateX added (dda lists TranslateY twice); Posterize fixed (dda shifts left then right, an identity); Solarize's range runs to 256/255 for an exact identity (dda's μ = 1 still inverts pure white; the search keeps dda's [0, 1]); kept: gray weights 0.299/0.587/0.110. Checked by hand (scratchpad, no test) against dda's formulas and kornia's shear/translate/rotate: equal (shear at `align_corners=True`; kornia 0.8.2's `shear` alone defaults to False) | dda's: shear factor ≤ 0.3, translate fraction ≤ 0.45, degrees ≤ 30, factor 1 ± m ≤ 1, Solarize threshold, Posterize μ (8 − ⌊8(1 − μ)⌋ bits), Cutout ≤ 0.2 of W, SamplePairing weight ≤ 1 |
+| `deepaa` | 26 | `deepaa.py`: Deep AutoAugment's ImageNet search space (Zheng et al., ICLR 2022; code `third_party/DeepAA`, `augmentation.py`): its 18 ops less Identity (the host's no-op), the 9 signed ops split into `_pos` / `_neg`. PIL's ops made differentiable: the geometric ops are PIL's AFFINE maps (`pil_data`, inverted into kornia's forward matrix in index coordinates by `forward_matrix`), sampled bilinearly where PIL uses NEAREST (no derivative otherwise), fill 0, label moved; the enhance ops are `trivialaug_diff.enhance_op` (PIL's ImageEnhance in float, 0.114 blue); Solarize, Posterize, AutoContrast, Equalize are `randaug_default`'s and Invert `autoaugment`'s (torchvision on 8-bit), Flip `madaug.flip`. `Cutout` is DeepAA's `RandCutout` (a 16/224·W square, uniform centre, clipped, fill (125, 123, 114), mask unchanged) and `RandomResizedCrop` its `RandResizeCrop_imagenet` (scale (0.08, 1), ratio (3/4, 4/3), resized back to the input's size, bilinear for bicubic; DeepAA's one-attempt fallback kept): both have no magnitude and are `stochastic`. Flagged: the published ImageNet policies name op 16 `RandCutout`, not the repo list's `RandCutout60`, and the released trainer's `RandCutout` asserts 32×32 images, so the search's op is ported. Checked by hand (scratchpad, no test) against DeepAA's PIL bodies transcribed: geometric ops match PIL with BILINEAR to a mean of < 1 level (8-bit units), enhance ops within 1.4 levels (PIL rounds), Solarize at all 12 thresholds, Posterize, Invert, Equalize, Flip and Cutout pixel-identical; AutoContrast off by one level on 1.6% of values (torchvision's float32 LUT, inherited from `randaug_default`) | DeepAA's: shear factor ≤ 0.3, translate fraction ≤ 0.45, degrees ≤ 30, factor 1 ± m ≤ 0.9, Solarize threshold [0, 256], Posterize bits [4, 8] |
+| `advaa` | 25 | `advaa.py`: Adversarial AutoAugment's 16 ops (Zhang et al., ICLR 2020, §3.2; no code released) at AutoAugment's Table 6 ranges (its footnote 1), the 9 signed ops split. `deepaa`'s bodies (AutoAugment's reference ops are the same PIL lineage). `Cutout` is `deepaa.cutout` with a magnitude ([0, 60/331] of W, "set ... to gray"); `SamplePairing` is `faster_aa.sample_pairing` ([0, 0.4], `couples_images`, its partner from the whole augmented batch, the M copies included). Checked like `deepaa` (shared bodies) plus the audit | Table 6 at 331 px: shear ≤ 0.3, translate ≤ 150/331 of W/H, degrees ≤ 30, factor 1 ± m ≤ 0.9, Solarize [0, 256], Posterize [4, 8], Cutout ≤ 60/331 of W, SamplePairing ≤ 0.4 |
 
 Every op takes its magnitude at the images' dtype precision (the torchvision ops too),
 so a python float and a float32 tensor holding it give identical output. The torchvision
@@ -67,6 +69,11 @@ is clipped to `mag_range`. Checked by hand against `_AUGMENTATION_SPACE` element
 images (`faster_aa.SamplePairing`): the probe gives it an `unprobed` NaN row (faded or not),
 the audit skips its per-image checks, and `tasks.augment.apply_draws` runs it over the whole
 batch, every image that didn't draw it at the identity.
+`OpSpec.stochastic` marks an op with no magnitude that draws its own randomness per image
+on every call (`deepaa.Cutout`, `deepaa.RandomResizedCrop`): a batched call cannot equal
+one image at a time under the audit's per-call seed, so the audit's `per_image` check
+instead holds image 0's output fixed while the other images change. Ops with a magnitude
+never need it (bumping the magnitude is the check).
 `OpSpec.tangent` (optional, photometric ops only) is `(images, magnitude) -> (B, C, H, W)`,
 the exact derivative of the op's output in its magnitude, for an op autograd can't
 differentiate. Only the torchvision enhance ops have one (`randaug_default.enhance_tangent`,
@@ -106,7 +113,9 @@ last two give the probe its magnitudes another way: `method_magnitudes`, `draw_m
 | `autoaugment` | `randaug_default.*` ops used by the ImageNet policy, plus `autoaugment.Invert` | q tilts the 25 sub-policies; `sampling_probs()` is what the policy actually draws, not q. `draw_bins`: per op, a bin from the policy steps that apply it, weighted by step p. Probe-only; trains through `autoaugment_diff` |
 | `autoaugment_diff` | `configs/vocab/autoaugment_diff_imagenet.yaml`: 15 ops, the `randaug_diff` ops the ImageNet policy applies (Rotate, Color, Contrast, Sharpness and ShearX split) plus `autoaugment.Invert` | `autoaugment`'s policy and tilt over `randaug_diff` at AutoAugment's 10 bins (torchvision's AutoAugment and RandAugment share their `_AUGMENTATION_SPACE` formulas), published, not searched. A step on a signed op chooses between its `_pos` / `_neg` columns, half each. q tilts per step: the sub-policy weight is Π (Σ share·q/base)^p over its steps and the step picks a direction ∝ share·q/base, so q = 0 on one direction forces the step to the other and removes no sub-policy; 0 on both (or on an unsigned op) removes its sub-policies as in `autoaugment`. A prune is the same, the directions renormalized for the run. With one column per op this is `autoaugment`'s tilt exactly (`AutoAugmentHost._columns`). `none_prob` 0. Trains (`BIN_HOSTS` / `SLOT_HOSTS`: `draw_slots`, a sub-policy per image, each step with its p). `draw_bins`: `autoaugment`'s, both directions of an op sharing its bins (flips ignored); Color is applied at bin 0 (its identity) in 0.8 of its 3.8 step-weight, so about a fifth of its probe images are measured at m = 0, where `Color_pos` and `Color_neg` are exact negatives (a within-op pair). No test of its own beyond the host-contract tests |
 | `madaug` | `configs/vocab/madaug.yaml`: 16 ops (`randaug_default`'s 13, `autoaugment.Invert`, `madaug.Cutout` / `Flip`) | MADAug's sampling (`hosts/madaug.py`); its policy network is `src/madaug/`, trained by `MADAugPolicyHook`. Per image: augmented with p(t) = tanh(t / τ), τ = 40/240 of training (`set_step`); then `k_ops` = 2 entries drawn from the policy's p without replacement (Identity applies nothing), each level δ-perturbed (0.3), the 5 geometric ops signed at random, mapped through MADAug's ranges into the vocab op's units (`level_to_magnitude`). `base_probs()` is a running mean of the policy's p (`observe`); q is held as q / base and tilts each image's p over the ops with p(Identity) held; `none_prob` is 1 - p(t). `draw_bins` is None: the probe's magnitude is the policy's own level on each probe image (`method_magnitudes`). `prune(hold_none_prob=False)` raises. Trains (`tasks.augment.POLICY_HOSTS`), on mmseg only |
-| `faster_autoaugment` | `faster_aa.*` (26 ops) | Faster AutoAugment's searched policy (`hosts/faster_autoaugment/host.py`), read from `policy_file` (the search's `final.npz`): L = 10 sub-policies × K = 2 stages, each stage a weight w, probability p and magnitude μ per op. Per image: a sub-policy uniformly, then per stage op a with probability w·p at μ, or nothing (dda samples per chunk of a 16-way split; at ≤ 16 images a GPU that is per image). `base_probs()` is each op's share of Σ w·p; q tilts every stage by q / base with each stage's no-op mass held; `sampling_probs()` is the realized share; `none_prob` the mean stage no-op. The prune zeroes the ops in every stage (`hold_none_prob=False` lets stage masses shrink). `draw_stages` for training (`tasks.augment.STAGE_HOSTS`); `draw_magnitudes` for the probe (per op, its searched μ's weighted by w·p, untilted). `policy_file: null` is dda's starting point (all equal, μ = p = 0.5), probe-only: `check_trainable` refuses it |
+| `faster_autoaugment` | `faster_aa.*` (26 ops) | Faster AutoAugment's searched policy (`hosts/faster_autoaugment/host.py`), read from `policy_file` (the search's `final.npz`): L = 10 sub-policies × K = 2 stages, each stage a weight w, probability p and magnitude μ per op. Per image: a sub-policy uniformly, then per stage op a with probability w·p at μ, or nothing (dda samples per chunk of a 16-way split; at ≤ 16 images a GPU that is per image). `base_probs()` is each op's share of Σ w·p; q tilts every stage by q / base with each stage's no-op mass held; `sampling_probs()` is the realized share; `none_prob` the mean stage no-op. The prune zeroes the ops in every stage (`hold_none_prob=False` lets stage masses shrink); `prune_report()` (in `prune.json` as `stages`, and train.py's summary) gives each stage's searched mass, the share the pruned ops held, the mass after, and the stages that lost over half. `draw_stages` for training (`tasks.augment.STAGE_HOSTS`); `draw_magnitudes` for the probe (per op, its searched μ's weighted by w·p, untilted). `policy_file: null` is dda's starting point (all equal, μ = p = 0.5), probe-only: `check_trainable` refuses it. `policy_file: initial` (`INITIAL`, train.sbatch `FAA_POLICY=initial`) is the same policy, trainable: the trunk of the search-then-train recipe. A policy searched over a subset (`faa_search.py --prune-ops` / `--random-prune`) is still 26 columns, the left-out ops at w = p = 0 (never applied), listed in `policy_meta['pruned_ops']`; `config.check` warns when the run's prune doesn't list them |
+| `deep_autoaugment` | `deepaa.*` (26 ops) | Deep AutoAugment's published policy (`hosts/deep_autoaugment.py`), read from `policy_file`, DeepAA's own `.npz` (default the submodule's `policy_DeepAA_imagenet_1.npz`; `load_policy` checks its op names, ranges and (op, level) table against the ImageNet list and a port of `_get_unique_policy`; a CIFAR policy is refused, its RandCrop not ported). K = 5 layers, each a distribution over 139 (op, level) transforms; per image, one draw per layer, applied in turn (`draw_stages`, `STAGE_HOSTS`). Each transform maps to atoms (vocab op or no-op, magnitude, share): the five geometric ops' sign is mirrored at p = 0.5 as the released trainer does (`random_mirror`, the user's choice), RandFlip is Flip half the time, Identity the no-op, Posterize `int(v)` bits. `base_probs()`, q and the prune are Faster AutoAugment's rule with a layer as a stage (each layer's no-op mass held; `prune_report()` per layer). `num_copies` (default 1; DeepAA's ImageNet config trains 8) is the preprocessor's batch augmentation. `policy_file: null` is DeepAA's identity init, refused for training. `policy_file: search` (`SEARCH`, train.sbatch `DEEPAA_POLICY=search`) is the probe-and-prune recipe: `pending`, the host draws nothing until `DeepAASearchHook` searches a policy at the pause and installs it (`install_policy`: the static prune applied to it, a q carried as its ratio); meanwhile `base_probs()` is the starting point's op shares, NMS's prior. `prune_report()` uses Faster AutoAugment's keys (a layer as a stage). Probed through its `fade:` block, at a fixed magnitude in the recipe (no `draw_magnitudes`). Checked (scratchpad, no test): both published policies load, the per-layer op distribution equals a Monte Carlo of DeepAA's own sampler (transcribed) and `draw_stages` over 2×10⁵ draws, q and the prune hold each layer's no-op mass; after `install_policy` under a static prune and PruneHook's q no pruned op is drawn and the draws match `layer_probs` |
+| `adversarial_autoaugment` | `advaa.*` (25 ops) | Adversarial AutoAugment's epoch policies (`hosts/adversarial_autoaugment.py`): M = `num_copies` (8) policies of 5 sub-policies × 2 ops, each op a type (16) and a bin (10), no probabilities, sampled each epoch by the controller (`src/advaa/`, `AdvAAControllerHook`) and installed with `set_policies`. Bin b is `linspace(lo, hi, 10)[b]` over Table 6's signed range (the paper's text; the user's choice), so the bin carries the sign. The preprocessor repeats each image M times copy-major; `draw_stages` gives image i (copy i // B) a uniform sub-policy of policy i // B and its two ops (`STAGE_HOSTS`). `base_probs()` is each op's share of the installed policies' applications and moves with them; `none_prob` 0. q tilts each policy's sub-policies by ∏ q / base (AutoAugment's rule at p = 1); an op the installed policies don't apply takes a neutral ratio, so a later epoch applies it untilted. The prune also masks the controller (`action_mask(extra=)`, the static prune plus an online prune's ops), so it never samples a pruned (type, bin), and shrinks it (`AdvAAControllerHook`). Raises if no policies were installed. Probed through its `fade:` block, at a fixed magnitude in the recipe. Checked (scratchpad, no test): the bin table, copy m drawing only policy m, draw frequencies equal to the base, the mask |
 | `uniform` | any; defaults to DIFF32 | Sensaug's `--random-aug` bank |
 
 Rules every host keeps. The no-op draw (Identity, `("none", 0)`) stays out of the
@@ -121,8 +130,13 @@ and Sensaug's `round_schedule` and `redundancy.reweight`.
 arm, for every host and every selector. `prune.ops` names ops; `prune.random: K` draws K
 more before training with Sensaug's `draw_random_prune` (`RandomState(prune.seed)`, by
 default the run's seed), from the vocabulary minus `prune.ops` and, on the sensaug host
-under `sa.remove_H`, minus lighter_H / darker_H. One op name is one unit (`X_pos` and
-`X_neg` are drawn independently). `dropaug.config.prune_of(cfg)` → `Prune` is a pure
+under `sa.remove_H`, minus lighter_H / darker_H. `prune.pool: probed` (default `all`,
+Sensaug's; train.py `--random-prune-pool`, train.sbatch `PRUNE_POOL`) also leaves out the
+ops the probe gives no row under the host's fade (`dropaug.config.unprobed_ops`:
+SamplePairing, the flips), which no R-based selector can prune, so a random-K null
+matched to an NMS prune removes ops NMS could have removed. The run name's draw part gets
+a `p` (`r<K>[s<seed>]p`), and `prune.json` records `pool_rule` when it isn't `all`. One op
+name is one unit (`X_pos` and `X_neg` are drawn independently). `dropaug.config.prune_of(cfg)` → `Prune` is a pure
 function of the config, so every rank, the `--dry-run` preflight, a resume and the
 post-hoc scripts get the same set; Sensaug instead derived its seed from `SLURM_JOB_ID`.
 `AugHost.prune(names, hold_none_prob=)` (applied by `build_host(pruned=...)`, which
@@ -156,13 +170,16 @@ ops through finite differences, which move the label with the image.
 trivialaugment_diff fades the same four (its other 18 ops go through autograd), and so do
 randaugment_diff and augmix_diff. autoaugment_diff fades those four and Invert (its other
 10 go through autograd). smartsampling_diff fades only AutoContrast (its other 12
-go through autograd). faster_autoaugment fades seven: HorizontalFlip, Solarize, Posterize,
-Invert, AutoContrast, Equalize and Cutout; SamplePairing stays an `unprobed` NaN row
-(`couples_images`).
-madaug fades seven: those four, Invert, Cutout (its hard edge steps) and Flip; its enhance
-ops go through their tangent and its geometric ops through finite differences, as
-trivialaugment's. madaug's yaml also has a `policy:` block (MADAugPolicyHook's keys),
+go through autograd). faster_autoaugment fades six: Solarize, Posterize, Invert,
+AutoContrast, Equalize and Cutout; SamplePairing (`couples_images`) and HorizontalFlip stay
+`unprobed` NaN rows.
+madaug fades six: those four, Invert and Cutout (its hard edge steps); Flip stays an
+`unprobed` NaN row. Its enhance ops go through their tangent and its geometric ops through
+finite differences, as trivialaugment's. The flips are out of probing and pruning (the
+user's probe-and-prune plan, 2026-11-03): faded, a flip's image is a ghost of two frames
+that no one label matches, and an unprobed row is set aside in R, so no selector prunes it. madaug's yaml also has a `policy:` block (MADAugPolicyHook's keys),
 which `host_kwargs` pops too and `dropaug.config.policy_of(cfg)` reads.
+deep_autoaugment and adversarial_autoaugment fade six each: Solarize, Posterize, AutoContrast, Invert, Equalize and Cutout (their other 18 go through autograd). deepaa's Flip and RandomResizedCrop stay `unprobed` NaN rows (faded, a flip or a crop is a ghost of two frames, so RandomResizedCrop, about a quarter of the published policy's draws, is never pruned), and so does advaa's SamplePairing (`couples_images`).
 sensaug and uniform have `ops: null`. A run saved before the block existed fades nothing.
 
 ## `src/probe/`: measuring G
@@ -268,7 +285,7 @@ ops only, the no-op mass stays with the host, decline rather than degrade, only
 | `random_k.py` | Sensaug's `null` draw (`draw_random_prune`), over the same pool as the ranked selectors. `null_band` runs it at several seeds |
 | `relevance_only.py` | new: top-k by prior, ignoring R. Declines on a flat prior. The split hosts' prior (trivialaugment_diff, randaugment_diff, augmix_diff) is not flat, since an unsplit op has twice a direction's share, so there it keeps Posterize, Solarize, AutoContrast and Equalize first and fills the rest by name; `config.check`'s "flat prior" warning names every host but sensaug and smartsampling_diff |
 | `cover.py` | new, naive, two arms of one experiment: `cover_single` and `cover_even`. A cross-op pair whose bootstrap CI lower bound (`Redundancy.ci_lo`, from `Analysis.ci_lo`) is above `tau` (0.3) moves the smaller-prior op, which ends at exactly `(1 - lam) * prior` in both. `cover_single` gives the mass to its partner (the "cover") and leaves every other op alone; `cover_even` spreads it over every op not moved, by prior. Strongest pair first, partners pinned (no chains), ties by name. Stateless: no persistence gate, hysteresis or rollback. `Selection.covers` and the redundancy log record the pairs. `config.check` accepts them only with a TrivialAugment host or sensaug. On sensaug q is per op too (each op's SA levels are scaled by one factor, so the mass `cover_single` moves is drawn at the cover's levels); every op has the same SA allotment there, so the moved op of a pair is the later name (priors within `_PRIOR_RTOL` tie). The SA loop re-selects on every round's pdf, and those picks (pruned ops, covers) are only in the training log (`[redundancy] SA round at iter ...`), not the redundancy log. Both yamls use `lambda_ramp: constant`: under the linear ramp lam reaches 1 only at the last emission, so nothing would ever be pruned during training. A declined emission leaves the last q in place (the hook's non-SA path). train.sbatch's `LAM` (default 0.25) overrides the yaml's lam 1: submit with `LAM=1`. `tests/selection/test_cover.py` |
-| `nms.py` | new, the ungated arm: `NMS(tau=0.5)` (Cohen's "large" r), greedy NMS over the ops not yet pruned, visited by loss increase (`score=`, `Analysis.loss_increase`), highest first. An op whose R with a kept op is above `tau` is pruned (q = 0). R is `R_residual`, read through `pairwise(R, "signed")`, so within-op pairs and anti-correlated pairs never suppress. No budget. `lam` must be 1 (it prunes). The prune is latched: `pruned=` (the last M) stays pruned and out of the ranking, so M only grows. `run` → `(Selection, NmsResult)` (who suppressed whom, at what r); `prune_weights(rel, M)` re-applies M to a new prior. Needs a score, so it runs through `PruneHook`, never `decide` / `ApplyWeightsHook` (both refuse it) |
+| `nms.py` | new, the ungated arm: `NMS(tau=0.5)` (Cohen's "large" r), greedy NMS over the ops not yet pruned, visited by loss increase (`score=`, `Analysis.loss_increase`), highest first. An op whose R with a kept op is above `tau` is pruned (q = 0). R is `R_residual`, read through `pairwise(R, "signed")`, so within-op pairs and anti-correlated pairs never suppress. No budget. `lam` must be 1 (it prunes). The prune is latched: `pruned=` (the last M) stays pruned and out of the ranking, so M only grows. `run` → `(Selection, NmsResult)` (who suppressed whom, at what r); `prune_weights(rel, M)` re-applies M to a new prior. Needs a score, so it runs through `PruneHook`, never `decide` / `ApplyWeightsHook` (both refuse it). `nms_analysis(sweep, static_pruned)` (R_residual, no bootstrap, no n_min) and `nms_select(analysis, rel, tau=, pruned=)` are PruneHook's chain, which `scripts/nms_prune.py` calls post hoc too. The matched null (`null_arm: random`, `null_seed`; `random_null`): at each probe NMS runs and is logged, then as many ops as it newly pruned are drawn at random from the ops it ranked (a positive prior, a usable row, a score, not yet pruned), seeded by `(null_seed, iteration)`, and pruned instead. The random-K arm of an online prune; the run name's arm is `nms-random<seed>-l1` (train.sbatch `NMS_NULL` / `NMS_NULL_SEED`) |
 | `decide.py` | `decide(analysis, rel, selector, role=...)`: the training-loop policy in one place. A control probe or a `withheld` Analysis declines, and otherwise the selector runs on `redundancy_of(analysis)` (primary R + FDR survivors). Used by `tasks/cls/callbacks.py`; the mmseg `ApplyWeightsHook` predates it and inlines the same steps. Also `publication(analysis, role=, mode=, mask_within_op=)` → `PUBLISH` / `KEEP` / `CLEAR`: Sensaug's `prune_augmentations` rule for the R an SA loop holds (control, skipped or all-NaN R keeps the last one; the shared-factor alarm or an unusable `compute_red` clears it) |
 
 A budgeted hard selector takes `budget` (measured ops kept) or is built with `lam`, which
@@ -354,6 +371,40 @@ What differs from MADAug, and why:
   pipeline is the base augmentation.
 - **Defaults** are main.sh's for reduced CIFAR-10: k = 2, δ = 0.3, T = 3, `search_freq` 3
   (the paper's Table 5 found 1 best), Adam lr 1e-3, weight decay 1e-3, no hidden layer.
+- **The prune** (dropaug's, for the probe-and-prune recipe; MADAug has none) shrinks the
+  policy network and keeps the rule every host with a no-op outcome keeps: the pruned mass
+  goes to the survivors by their share, and p(Identity) stays where it was (the user's
+  choice, 2026-11-03). `Projection.prune(cols)` slices the pruned ops' two rows (level,
+  weight) out of the output layer, which becomes `Linear(h, 2·live)`: at SegFormer-B0's
+  256-channel feature, 8,738 trainable parameters, 6,682 after 4 ops (`param_counts()`,
+  FACTS D9). Their weight logits stay as a frozen buffer (1,028 numbers at 4 ops), evaluated under
+  no_grad, so they sit in the softmax as a constant mass: dropped, the softmax would hand
+  Identity part of their mass; left live, they would be a knob on p(Identity) that
+  nothing optimizes. `forward` scatters back into the 2 × 17 layout, so `predict` gives the
+  pruned columns 0, keeps the full softmax's p(Identity), and rescales the survivors to
+  1 − p(Identity), differentiably (`unpruned=True`: the plain softmax), and
+  `relaxed_batch(skip=)` leaves the pruned ops out of the relaxation. It can be called
+  again with more columns, never fewer (an online prune grows), and with the policy's
+  optimizer its Adam state follows the kept rows. Linear policies only (Table 5's
+  default): with hidden layers the frozen logits would need the hidden layers as they were
+  at each prune, so `config.check` refuses `n_layers > 0` under a prune. Two prunes reach
+  it, through `MADAugPolicyHook`: the static prune at the init (a fork of an unpruned run:
+  at the policy it loads), and selector nms's online M (`runner.latched_prune`) before the
+  first step after each probe that grows it (the user's recipe: train MADAug normally,
+  probing and pruning on the 8-interval schedule). `frozen_cols` goes in the checkpoint
+  (`policy_from_checkpoint` and a resume load it back pruned). Every step logs
+  `train/madaug_policy_params` / `_frozen`, and once something is pruned
+  `train/madaug_identity_share`, `train/madaug_expected_ops` and
+  `train/madaug_expected_ops_unpruned` (`hosts.madaug.expected_ops`: real ops among k
+  draws without replacement, per augmented image); it asserts p(Identity) unchanged to
+  1e-6. The expected ops are only logged: with k draws without replacement they move with
+  the survivors' spread. The blend is one image per input, so the policy step's model
+  passes cost the same after a prune (no n(n−1) pairs here): the network shrinks, the
+  step's compute about doesn't. Checked on CPU (scratchpad, no test): over 30 Adam steps
+  with prunes at steps 5 and 15, p within 3.6e-7 of the freeze-a-full-copy rule it
+  replaced; no gradient to the frozen logits, Identity's still learning; incremental
+  prunes equal one prune; Adam's state sliced; the checkpoint round trip; hidden layers
+  and Identity refused; the host never draws a pruned op even fed a p that favors them.
 
 ## `src/hosts/faster_autoaugment/`: Faster AutoAugment's search
 
@@ -368,7 +419,7 @@ targets mmseg segmentation (the user's choice, 2026-10-25), adapted as AutoAlbum
 | file | what |
 |---|---|
 | `host.py` | the host (numpy; see `src/hosts/`). `load_policy` checks a policy file (format, version, ops against vocab `faster_aa`, shapes, each stage's w a distribution, p in [0, 1], μ in [0, scale]); `initial_policy` is dda's starting point made deterministic |
-| `policy.py` | dda's `Policy` / `SubPolicy` / `SubPolicyStage` / `_Operation`, search mode only, over the 26 ops: each op gated by a RelaxedBernoulli(p) per image, each stage the softmax(w / 0.05)-weighted sum of every op, each sub-policy run on one of `num_chunks` chunks. μ is `clamp(mu, 0, 1)` times dda's `magnitude_scale` (`faster_aa.POLICY_SCALES`). Solarize, Posterize and Cutout get dda's straight-through gradient in μ, AutoContrast and Equalize in the image. A soft mask (K + 1 channels, the last ignore) goes through the same sums: the geometric ops warp it bilinearly (out-of-frame mass to ignore), HorizontalFlip flips it, every other op leaves it. `export()` → the host's arrays |
+| `policy.py` | dda's `Policy` / `SubPolicy` / `SubPolicyStage` / `_Operation`, search mode only, over the 26 ops: each op gated by a RelaxedBernoulli(p) per image, each stage the softmax(w / 0.05)-weighted sum of every op, each sub-policy run on one of `num_chunks` chunks. μ is `clamp(mu, 0, 1)` times dda's `magnitude_scale` (`faster_aa.POLICY_SCALES`). Solarize, Posterize and Cutout get dda's straight-through gradient in μ, AutoContrast and Equalize in the image. A soft mask (K + 1 channels, the last ignore) goes through the same sums: the geometric ops warp it bilinearly (out-of-frame mass to ignore), HorizontalFlip flips it, every other op leaves it. `export()` → the host's arrays. `Policy(names)` searches a subset of the 26 (in vocab order): each stage holds only those ops, so the policy is smaller (`param_count()`: 1,480 over all 26 at L = 10, K = 2, FACTS D10) and each step applies fewer; `export()` still writes 26 columns, the left-out ones at w = p = 0 |
 | `search.py` | `search` / `search_step`: dda's `AdvTrainer.wgan_loss` (critic: task × 0.1 − critic(real) + critic(policy(a)) + 10 · GP; then the policy: task × 0.1 − critic(policy(a)), the critic frozen), Adam 1e-3, betas (0, 0.999). `SegmentorCritic`: one segmentor as task model and critic, dda's `Discriminator` perceptron on its deepest feature, average pooled. `soft_mask`, `soft_cross_entropy` (per image, over the non-ignore mass). `save_policy` (atomic `.npz`, read back). Writes `epoch_<N>.npz`, `final.npz`, `search_log.jsonl`, `search_config.json` |
 
 Defaults (`configs/host/faster_autoaugment.yaml`, `host.search`): the paper's L = 10,
@@ -387,6 +438,171 @@ match `sampling_probs()` over 4×10⁴ images. Never run on mmseg (not in `sensA
 `scripts/smoke_faster_autoaugment.py` (run by `slurm/test.sbatch`) is the GPU version of
 that check: search steps on a toy segmentor, the host on the policy they write,
 `augment_batch`, and the probe at the host's magnitudes (passed on CPU; not yet run on a GPU).
+
+## Deep AutoAugment: `hosts/deep_autoaugment.py`, vocab `deepaa`
+
+Deep AutoAugment (Zheng, Zhang, Yan & Zhang, ICLR 2022, arXiv 2203.06172; code
+github.com/AIoT-MLSys-Lab/DeepAA, no license file, vendored as the submodule
+`third_party/DeepAA`) searches a K-layer policy by regularized gradient matching (JVPs on a
+frozen pretrained model) and publishes the result. dropaug trains on the published ImageNet
+policy (the user's choice, 2026-11-03), or searches one in the run for the probe-and-prune
+recipe (`policy_file: search`, the user's choice, 2026-11-05; below). What follows the
+released code over the paper, and what departs from both:
+
+- **The sign of the geometric ops** follows the released trainer
+  (`DeepAA_evaluate/deep_autoaugment.py`, `random_mirror = True`): ShearX/Y, TranslateX/Y
+  and Rotate flip sign at p = 0.5, though the search learned a signed policy and the paper
+  says nothing (the user's choice, 2026-11-03: train as it actually ran). `random_mirror:
+  false` applies the searched sign.
+- **Op 16 is `RandCutout`** (16 px at 224), as both published ImageNet policies name it,
+  not `RandCutout60` as the repo's `aug_op_imagenet_list` now says. The trainer's
+  `RandCutout` (`Cutout_default`) asserts 32×32 images, so the released code cannot apply it
+  to ImageNet; the search's `augmentation.RandCutout` is ported, at 16/224 of the width.
+- **No default augmentation in DeepAA's trainer** (its crop and flip are policy ops); here
+  the recipe's resize / crop / flip pipeline runs first, as for every host, so a flip can
+  come from both. The ImageNet policies put about a quarter of all draws on
+  RandomResizedCrop (74% of layer 2's in imagenet_1), scale down to 0.08, resized back to
+  the crop size (DeepAA resizes to 224).
+- **Resampling** is bilinear for PIL's NEAREST (geometric) and BICUBIC (the crop), so the
+  geometric ops differentiate; PIL's 8-bit rounding in the enhance ops is not reproduced.
+- **Batch augmentation** (`num_copies`): DeepAA's ImageNet config trains 8 copies (all
+  workers on one batch); the default here is 1, the single-GPU configs'.
+
+**The search in the run** (`src/deepaa/`, torch with no framework; glue
+`tasks/mmseg/deepaa_hooks.py`). DeepAA trains a network first (`pretrain()`, its default
+augmentation only), freezes it (BatchNorm untrainable, `training=False`), then searches the
+layers one at a time; here the network is the run's own at the pause, so the run is train
+(no policy), pause, probe, prune, search, resume (the user's rule, 2026-11-05):
+
+| file | what |
+|---|---|
+| `space.py` | the 139 transforms as `deepaa` draws, each at its searched sign (the search's ops never mirror; RandFlip's coin per image); `kept_transforms(pruned)`, DeepAA's `available_policies`: a transform leaves when the op it applies in the search is pruned, Identity stays first |
+| `policy.py` | `LayerPolicy`: identity-initialized logits over the kept transforms; `export` / `save_npz` (DeepAA's `.npz`, 139 columns, the left-out ones at 0, plus `pruned_ops`) |
+| `search.py` | `Task` (weighted gradients in chunks; forward-mode `torch.func.jvp`, or `finite_diff`), `image_importance`, `Search` (each layer's Adam, `state_dict` mid-layer), `run_step`, `pass_counts` |
+
+For one search image x: g_v the gradient of its validation batch's mean loss; g_T the
+augmented gradient; tangent = g_v − g_T (g_v·g_T)/|g_T|²; importance_t = (∇l(t(x))·tangent) /
+(|g_T||g_v|), which is ∂cos(g_v, g_T)/∂p_t. Layer 1: g_T = Σ p_t ∇l(t(x)) over every kept
+transform, importance averaged over the step's images, loss −0.25 Σ importance·p. Layer
+k ≥ 2: g_T over 4·|kept| copies drawn through layers 1..k; the JVPs over 16 copies drawn
+through layers 1..k−1, each then through every kept transform; across images mean − std
+(Eq. 10, c = 1; the code takes no std at layer 1, and neither does this), loss −n Σ
+importance·p. Adam lr 0.025, betas (0.9, 0.999), eps 1e-7 (Keras'). A pass's images are
+regenerated under per-chunk seeds rather than stored, so layer 1's gradient and JVP see
+the same images. Pruning shrinks the policy (K × |kept| logits, FACTS D11) and every step's
+passes in proportion. Checked on CPU (scratchpad, no test): the forward JVP equals ∇l·t and
+a central difference; layer 1's importance equals autograd's ∂cos/∂p (2.5e-9); Adam's first
+step and mean − std; the model's weights, BN statistics and `.grad` untouched; a resumed
+search's state; the export loads.
+
+The hook (`DeepAASearchHook`): at `at` (0.25·max_iters by default, on the checkpoint grid,
+which `check()` requires so a job stopped mid-search resumes at the pause; under selector
+nms an active probe must fall there, and later active probes warn) it searches over the
+vocab minus the static prune and PruneHook's latched M, then installs the policy and
+training resumes, same model, same schedule. Choices and departures, flagged:
+
+- **Settings default to DeepAA's released ones** (README: K = 5 as published (the README
+  searches 6), 1024 steps per layer (the paper says 512), 16 images a step, 64 validation
+  images each, EXP_G 16, EXP_gT ×4, chunks of 16). On SegFormer-B0 at Cityscapes' crop
+  that is about 44M image backward passes and 148M JVPs over all 139 transforms
+  (`pass_counts`, logged at the start): hundreds of GPU-hours. The budget is the user's to
+  set (2026-11-05) through `host.search.*`; the job's `--time` must cover it.
+- **Validation images** come from the val split, one at a time, at full size (MADAug's
+  split); DeepAA pairs each search image with images of its class from a held-out part of
+  train, and a segmentation image has no class, so they are random (the paper's text).
+- **The loss** is plain cross-entropy over the decode head's logits, per image over its
+  non-ignore pixels; not the head's configured `loss_decode`, no auxiliary head.
+- **The mirror**: the search applies each signed transform at its own sign, the trainer
+  then mirrors (`random_mirror`); a kept transform whose other sign is pruned has that half
+  zeroed by the host's prune.
+- **A resumed search** continues from `state.pt` (logits, Adam, layer, step); its loaders
+  restart seeded by the step it resumes at instead of being fast-forwarded, so its later
+  batches are fresh (still reproducible).
+- **The arms**: the control (`selector=none`) searches all 139; `nms` and its matched null
+  (`NMS_NULL=random`) search what their prune leaves. `DEEPAA_POLICY=search` names the run
+  `..._deepaa-search` (`run_name` likewise).
+
+Checked on stand-ins for mmengine / mmseg (scratchpad): the warmup applies nothing; the
+search fires once, after a latched M, over the kept transforms; train mode, weights and
+`.grad` restored; no pruned op drawn after; a search stopped mid-layer resumes; the
+checkpoint round trip installs without searching. Never run on mmseg or a GPU.
+
+## Adversarial AutoAugment: `src/advaa/`, `hosts/adversarial_autoaugment.py`, vocab `advaa`
+
+Adversarial AutoAugment (Zhang, Wang, Zhang & Zhong, ICLR 2020, arXiv 1912.11188; no code
+was released) trains the target and an augmentation policy network jointly: each epoch an
+LSTM controller samples M = 8 policies, every image is trained on M copies (copy m
+augmented by policy m, Eq. 4-6, learning rate unchanged), and the controller takes one
+REINFORCE step to maximize each copy's training loss (Eq. 7-9, Algorithm 1). The pieces:
+
+    src/advaa/controller.py  Controller: a 1-layer LSTMCell (embedding 32, hidden 100), 20
+                             steps a policy ([type (16), bin (10)] x 2 ops x 5
+                             sub-policies), each sampled action embedded and fed back;
+                             sample(M, mask) on the CPU, log_prob_entropy (teacher-forced)
+    src/advaa/reinforce.py   normalize (z-score across M), controller_loss (-mean(L~ log p)
+                             - 1e-5 mean(H)), EpochMeans (L^_m, the epoch's mean per copy)
+    src/advaa/reward.py      copy_losses: Eq. 5's L_m per copy, from the step's own logits
+    tasks/mmseg/advaa_hooks.py  AdvAAControllerHook (glue; the host yaml's controller:
+                             block, added by config.py for a host with one, augment on)
+
+The batch path is `num_copies` in the preprocessor (`tasks/mmseg/transforms.py`): the
+training batch is repeated M times copy-major and its data samples deep-copied before the
+host augments it; `last_train_samples` keeps them. L_m is read with no extra forward: a
+forward hook on the decode head keeps the training logits, and copy m's loss is the head's
+own `loss_by_feat` on its slice (auxiliary heads not included). Each epoch's policies,
+copy losses and rewards go to `<work_dir>/advaa_policies.jsonl` (rank 0).
+
+Choices where the paper is silent or split (the user's, 2026-11-03, marked; the rest mine,
+flagged):
+
+- **Magnitudes** (the user's): the paper's text, 10 values uniformly over AutoAugment's
+  Table 6 range (`linspace(lo, hi, 10)`), so the bin carries the sign and maps to `_pos` /
+  `_neg`; not AutoAugment's TF code (levels 0-9 of [0, max] plus a random sign).
+- **M copies** (the user's): faithful, M = 8 by default; the per-GPU batch is the recipe's
+  times M.
+- **The epoch** is `epoch_iters` steps, by default one pass over the train set
+  (`ceil(len / (batch x world))`): policies are sampled once an epoch and the controller
+  steps once an epoch (Algorithm 1).
+- **L^_m** is the mean of copy m's step losses over the epoch (Algorithm 1 resets it each
+  epoch; footnote 2's moving average "fixed to an epoch").
+- **Normalization** across the M is a z-score (population std); the paper does not say how.
+- **The entropy term** is a bonus (J + 1e-5 H), the sign ENAS / AutoAugment use, since it
+  is there "to avoid unexpected rapid convergence".
+- **The controller's details** the paper leaves open follow ENAS: a learned first input,
+  separate type and bin embeddings, U(-0.1, 0.1) init, Adam's default betas.
+- **Cutout and SamplePairing** keep the mask (as for Faster AutoAugment); SamplePairing's
+  partner comes from the whole B x M batch. No post-policy Cutout (the paper's CIFAR
+  default); the recipe's pipeline runs before the policy, as in its ImageNet setting.
+- **The prune** (dropaug's, for the probe-and-prune recipe's online kind: the user's choice,
+  2026-11-05, probe and prune every max_iters/8 with selector nms) shrinks and masks the
+  controller. `Controller.prune(types)` removes a type every bin of which is pruned: its
+  rows leave the type head and type embedding (133 parameters a type at hidden 100,
+  embedding 32; FACTS D12), Adam's state follows the kept rows, and the logits scatter
+  back into the 16 with the removed types at the dtype's minimum, so the distribution is
+  the unpruned controller's masked exactly (checked: log-probabilities of 256 policies
+  equal, 0.0). A type with one sign pruned keeps its row and masks those bins; the bin
+  head, shared by every type, keeps its 10 rows. No no-op to hold: the softmax hands a
+  removed type's mass to the others by share. The static prune applies at the build; the
+  online one (`runner.latched_prune`) before the first step after the probe that grows it,
+  where the epoch so far is closed early (a controller step on its partial means, under the
+  old mask, so its sampled actions keep finite log-probabilities; flagged: the alternative
+  was to discard it), then M new policies over what is left and a new epoch clock
+  (`epoch_start`). A checkpoint's controller loads pruned as it was saved, then pruned to
+  the run; a run that doesn't prune what the checkpoint's controller did refuses it.
+  Loaded policies the run's prune forbids are resampled.
+
+DDP: rank 0 samples (a generator seeded off numpy's global RNG) and broadcasts the
+policies; the per-copy sums are all-reduced; every rank takes the same controller step and
+rank 0's weights are broadcast after it. The controller, its optimizer, the installed
+policies and the epoch's sums are checkpointed (`advaa_controller`). Checked on CPU
+(scratchpad, no test): the controller's first draw against its softmax (MC), log-probs and
+the mask, a toy REINFORCE run raising the rewarded action, `copy_losses`, and the
+preprocessor and hook on stand-ins for mmengine / mmseg (B -> B x M copy-major with labels
+moving per copy, the epoch boundary, two controller steps with new policies, the jsonl
+record, a checkpoint round trip, a pruned fork resampling; the online prune closing the
+epoch early, slicing Adam, resampling off the pruned ops and restarting the clock; a pruned
+checkpoint round trip). Never run on mmseg (not in `sensAug`). Probed through its `fade:`
+block.
 
 ## `src/dropaug/eval/`: scoring trained models
 
@@ -433,7 +649,7 @@ A `TaskBackend` (`base.py`) is a `probe.ModelAdapter` that can also `build_model
 `load_ckpt(path)` and name its clean probe data (`probe_data()` → `ProbeData(dataset,
 ids)`; the probe builds the loader itself, in ProbeSet order). With `predict` it is
 also `dropaug.eval`'s adapter. `build_backend(name)` imports a backend lazily, so
-`import tasks` needs no framework. `tasks/augment.py` (training draws) and `tasks/magnitudes.py` are shared by both
+`import tasks` needs no framework. `tasks/augment.py` (training draws; its guard, `forbidden_ops(host)` → `apply_draws(forbidden=)`, raises `PrunedOpDrawn` if a draw ever names an op the host prunes or gives probability 0, static or online: checked on every training host that none ever does, 2026-11-04, after Sensaug once trained on pruned ops) and `tasks/magnitudes.py` are shared by both
 backends. `tasks/magnitudes.py` gives the probe's magnitudes for a host,
 `probe_magnitudes(host, snapshot, mode, fallback)`:
 - `"fixed"` gives `probe.magnitude`;
@@ -462,10 +678,12 @@ ImageFolder, but never with timm (not in `sensAug`).
 | file | what |
 |---|---|
 | `backend.py` | `MMSegBackend(cfg, model=None, split="val")`, `.from_runner(runner)`. `to_unit` runs the model's preprocessor with `training=True` (mmseg pads the gt only there) with the train aug suspended, then de-normalizes. `loss` is `model.loss` per image, summed over its `loss*` keys, with the op's label swapped in and restored. `predict` is the segmentor's `inference` resized to the label. `corrupted_dataset(dataset, corrupt_image)` applies a corruption to each packed image as it is read (after Resize, before the preprocessor), for `run`'s `corrupted_loader`; an image the preprocessor pads is corrupted before its pad there, after it on the unit batch. Refuses a random val pipeline, BGR input, and labels of mixed native sizes (use batch size 1). `load_ckpt` scopes the torch ≥2.6 `weights_only=False` patch to the one load |
-| `hooks.py` | `CollectGradientHook` (NORMAL): on `host.probe_role(runner.iter + 1)`, `probe.sweep` → `runner.probe_sweep`; saves/verifies `probe_set.json`. Its `magnitude_mode` (default `"mode"`, Sensaug's) takes each op's magnitude from the SA loop's last snapshot (`runner.corr_magnitudes`), falling back to `magnitude`. A host with `draw_bins` is probed at its own bins instead, except under `"fixed"` (`tasks.magnitudes`). `fade` / `fade_at` come from the host's `fade:` block (`config.py`) and go to `probe.sweep`. The host's `pruned()` ops are skipped (`static_pruned` NaN rows) unless `probe_pruned` (`prune.probe`), and `ApplyWeightsHook` sets them aside in R either way. Compile-checked only: no mmengine in `sensAug`. `ApplyWeightsHook` (LOW): `stats.analyze_sweep` → logs → `build_selector(type, lam=ramp_lambda(...))` → `host.set_weights(q)`. With `RobustValLoop` on an SA host, it only publishes R (`selection.publication`, rank 0's call broadcast), and the loop calls `reweight()` on every round's fresh pdf at Sensaug's λ, `ramp(target, (iter + 1) / max_iters)` (`GradCorrValLoop`). With no R held, or a declined selection, `reweight()` calls `host.clear_weights()`, so the round trains on its pdf as generated, as in Sensaug; the last q is never carried over. Without an SA loop, control probes, lam=0, a withheld R and a declined selection leave the host alone. Every rank sweeps; rank 0's q is broadcast. Checked (a scratchpad harness, no test yet) against Sensaug's real `_downweight_mrmr` / `reweight` / `compute_red` round by round (mRMR and soft at λ 0, 0.25, 1; withheld, skipped and FDR-empty emissions; both pdf generators): equal to 1e-12, same ops pruned. `PruneHook` (LOW) takes its place for selector `nms` (`config.py` picks it): `stats.analyze_sweep(residual_rank=True, bootstrap=False, n_min=0)` with the host's `pruned()` ops set aside, as ApplyWeightsHook does, → logs → `NMS.run` (rank 0's M broadcast) → `host.set_weights` with M zeroed, or with an SA loop `reweight()` on every fresh pdf (M empty: `clear_weights`). No gate: control probes log only, and two health checks warn (`null_max_bound` ≥ tau, \|mean off-diagonal\| > 3/√(N−1)). M and its history go to `pruned_ops.json` at every active probe and are reloaded on resume (a non-SA host gets q at once, an SA host at its first round). The NMS record goes to `corr_redundancy_log.txt`. Checked on stand-ins for mmengine (scratchpad, no test): uniform and SA-driven sensaug hosts, control probe, resume. `HostProgressHook` (VERY_HIGH): `host.set_step(runner.iter + 1)` before every step, for a host with `set_step` (smartsampling_diff's P, madaug's p(t)); `config.py` adds it |
-| `transforms.py` | `GpuAugSegDataPreProcessor(host=dict(type=...), augment=True)`: Sensaug's `GpuAugSegDataPreProcessor`, batched on GPU after collation, same arithmetic as the backend. It owns the host (`.host`) the hooks read. Sampling is Sensaug's: the SensAug pdf with q (+N(0, 0.1) level jitter), else `sampling_probs()` / `none_prob` at a uniform level. DIFF32 ops with the `sensaug` / `uniform` hosts, or a `tasks.augment.BIN_HOSTS` host (each op from `sampling_probs()` / `none_prob`, at the magnitude of its `draw_bins` bin read through `vocab.magnitude_bins`, in the op's units; `tests/tasks/test_augment.py`): `trivialaugment_diff` (one op per image), `randaugment_diff` (`num_ops` rounds), `augmix_diff` (`MIX_HOSTS`: chains mixed with the clean image, the label left as it is), `smartsampling_diff` (`SLOT_HOSTS`: `host.draw_slots`, 2 ops at one level) or `autoaugment_diff` (`SLOT_HOSTS`: a sub-policy's two steps); or the `madaug` host (`tasks.augment.POLICY_HOSTS`: the slots `MADAugPolicyHook` installed for the batch, `apply_slots`, refused if none were), or the `faster_autoaugment` host (`tasks.augment.STAGE_HOSTS`: `host.draw_stages`, the stages applied in turn); other hosts raise (`check_trainable`) unless `augment=False`. The eval slot (`set_eval(op, level)` / `set_eval_none()`, Sensaug's `set_eval_spec`) applies one op to every image on the eval path, for the SA loop |
+| `hooks.py` | `CollectGradientHook` (NORMAL): on `host.probe_role(runner.iter + 1)`, `probe.sweep` → `runner.probe_sweep`; saves/verifies `probe_set.json`. Its `magnitude_mode` (default `"mode"`, Sensaug's) takes each op's magnitude from the SA loop's last snapshot (`runner.corr_magnitudes`), falling back to `magnitude`. A host with `draw_bins` is probed at its own bins instead, except under `"fixed"` (`tasks.magnitudes`). `fade` / `fade_at` come from the host's `fade:` block (`config.py`) and go to `probe.sweep`. The host's `pruned()` ops are skipped (`static_pruned` NaN rows) unless `probe_pruned` (`prune.probe`), and `ApplyWeightsHook` sets them aside in R either way. Compile-checked only: no mmengine in `sensAug`. `ApplyWeightsHook` (LOW): `stats.analyze_sweep` → logs → `build_selector(type, lam=ramp_lambda(...))` → `host.set_weights(q)`. With `RobustValLoop` on an SA host, it only publishes R (`selection.publication`, rank 0's call broadcast), and the loop calls `reweight()` on every round's fresh pdf at Sensaug's λ, `ramp(target, (iter + 1) / max_iters)` (`GradCorrValLoop`). With no R held, or a declined selection, `reweight()` calls `host.clear_weights()`, so the round trains on its pdf as generated, as in Sensaug; the last q is never carried over. Without an SA loop, control probes, lam=0, a withheld R and a declined selection leave the host alone. Every rank sweeps; rank 0's q is broadcast. Checked (a scratchpad harness, no test yet) against Sensaug's real `_downweight_mrmr` / `reweight` / `compute_red` round by round (mRMR and soft at λ 0, 0.25, 1; withheld, skipped and FDR-empty emissions; both pdf generators): equal to 1e-12, same ops pruned. `PruneHook` (LOW) takes its place for selector `nms` (`config.py` picks it): `stats.analyze_sweep(residual_rank=True, bootstrap=False, n_min=0)` with the host's `pruned()` ops set aside, as ApplyWeightsHook does, → logs → `NMS.run` (rank 0's M broadcast) → `host.set_weights` with M zeroed, or with an SA loop `reweight()` on every fresh pdf (M empty: `clear_weights`). No gate: control probes log only, and two health checks warn (`null_max_bound` ≥ tau, \|mean off-diagonal\| > 3/√(N−1)). M and its history go to `pruned_ops.json` at every active probe and are reloaded on resume (a non-SA host gets q at once, an SA host at its first round). The NMS record goes to `corr_redundancy_log.txt`. With `null_arm` set it prunes the matched null's draw instead (NMS's own pass logged next to it, `null` in the record and `pruned_ops.json`; a resume refuses a file of the other kind). M is published as `runner.latched_prune` (on resume too), which MADAugPolicyHook prunes the policy network to. Checked on stand-ins for mmengine (scratchpad, no test): uniform and SA-driven sensaug hosts, control probe, resume. `HostProgressHook` (VERY_HIGH): `host.set_step(runner.iter + 1)` before every step, for a host with `set_step` (smartsampling_diff's P, madaug's p(t)); `config.py` adds it. `KeepCheckpointHook(iters)` (LOWEST, after CheckpointHook; `keep_checkpoints`): hard-links `iter_<N>.pth` into `<run>/keep/` as it is saved, so it outlives `max_keep_ckpts = 3` and a fork can start from it |
+| `transforms.py` | `GpuAugSegDataPreProcessor(host=dict(type=...), augment=True)`: Sensaug's `GpuAugSegDataPreProcessor`, batched on GPU after collation, same arithmetic as the backend. It owns the host (`.host`) the hooks read. Sampling is Sensaug's: the SensAug pdf with q (+N(0, 0.1) level jitter), else `sampling_probs()` / `none_prob` at a uniform level. DIFF32 ops with the `sensaug` / `uniform` hosts, or a `tasks.augment.BIN_HOSTS` host (each op from `sampling_probs()` / `none_prob`, at the magnitude of its `draw_bins` bin read through `vocab.magnitude_bins`, in the op's units; `tests/tasks/test_augment.py`): `trivialaugment_diff` (one op per image), `randaugment_diff` (`num_ops` rounds), `augmix_diff` (`MIX_HOSTS`: chains mixed with the clean image, the label left as it is), `smartsampling_diff` (`SLOT_HOSTS`: `host.draw_slots`, 2 ops at one level) or `autoaugment_diff` (`SLOT_HOSTS`: a sub-policy's two steps); or the `madaug` host (`tasks.augment.POLICY_HOSTS`: the slots `MADAugPolicyHook` installed for the batch, `apply_slots`, refused if none were), or the `faster_autoaugment`, `deep_autoaugment` or `adversarial_autoaugment` host (`tasks.augment.STAGE_HOSTS`: `host.draw_stages`, the stages applied in turn); other hosts raise (`check_trainable`) unless `augment=False`. The eval slot (`set_eval(op, level)` / `set_eval_none()`, Sensaug's `set_eval_spec`) applies one op to every image on the eval path, for the SA loop. A host with `num_copies` M > 1 trains on M copies of each image: the training batch is repeated M times copy-major (and its data samples deep-copied) before the host augments it, and `last_train_samples` keeps the augmented samples for `AdvAAControllerHook` |
 | `loops.py` | Sensaug's loops. `RobustValLoop` (val_cfg) is the SA loop: after `warmup_rounds`, every round scores each op at each curve level on `ratio` of val through the eval slot, builds the pdf (`sa.generate_pdf_new` with `descending_MA`, or `uniform` / `weighted_augs`) and calls `host.set_sa_pdf`, then `ApplyWeightsHook.reweight`, then publishes `runner.corr_magnitudes`. Under `PruneHook` it stops scoring the latched M: M is left out of the curve search and every round's eval, so out of the pdf, with M still counted in P(none)'s denominator (the pdf training sees equals the old one with M zeroed by q; ApplyWeightsHook's hard prunes are re-selected every round and stay scored). It re-searches the curve (`sa.sa_curve`, via `SubsetTestLoop`) every `SA_CURVE_CADENCE` = 6 rounds. Writes `sa_curve_log.txt`, `perturb_eval.txt`, `corr_magnitudes.json`. Refuses `warmup_rounds` / val_interval that differ from the host's. Also `RobustBaselineValLoop`, `SubsetTestLoop` (test_cfg, with KID), `SubsetValLoop`, `RobustIterBasedTrainLoop` (train_cfg, `init_sa`). The module docstring has the config Sensaug's train.py set |
-| `madaug_hooks.py` | `MADAugPolicyHook(search_freq=3, lr=, weight_decay=, n_layers=, n_hidden=, hypergrad="exact" \| "finite_diff", fd_eps=, split="val")`, the host yaml's `policy:` block, added by `config.py` for a policy host with augment on (see `src/madaug/`). Publishes `runner.madaug_policy`, which `CollectGradientHook` runs over the probe set for a madaug host's magnitudes. `probe_set_levels`, `policy_from_checkpoint`. Compile-checked and run on stand-ins only |
+| `madaug_hooks.py` | `MADAugPolicyHook(search_freq=3, lr=, weight_decay=, n_layers=, n_hidden=, hypergrad="exact" \| "finite_diff", fd_eps=, split="val")`, the host yaml's `policy:` block, added by `config.py` for a policy host with augment on (see `src/madaug/`). Publishes `runner.madaug_policy`, which `CollectGradientHook` runs over the probe set for a madaug host's magnitudes. Prunes the policy network (`Projection.prune`) to the host's static prune at its init (a fork of an unpruned run: at the policy it loads) and to PruneHook's `runner.latched_prune` before the first step after each probe that grows it, Adam's state following the kept rows; logs `train/madaug_policy_params` / `_frozen` every step. `probe_set_levels`, `policy_from_checkpoint` (pruned as saved). Compile-checked and run on stand-ins only |
+| `advaa_hooks.py` | `AdvAAControllerHook(lr=0.00035, entropy_weight=1e-5, hidden=100, embed=32, epoch_iters=None)`, the host yaml's `controller:` block (`dropaug.config.controller_of`, popped by `host_kwargs`), added by `config.py` for a host with one and augment on (see Adversarial AutoAugment below). Prunes the controller (`Controller.prune`) to the static prune at its build and to PruneHook's `runner.latched_prune` before the first step after each probe that grows it: the epoch so far closed early with a controller step, then new policies and a new epoch clock; `pruned_types` / `pruned_ops` / `epoch_start` in the checkpoint. `decode_loss`. Run on stand-ins only |
+| `deepaa_hooks.py` | `DeepAASearchHook(at, save_every=32, seed=0, **deepaa.Settings)`, the deep_autoaugment yaml's `search:` block (`dropaug.config.deepaa_search_of`: only for `policy_file: search`, `at` resolved from a fraction), added by `config.py` with augment on (see Deep AutoAugment below). At the pause (before the first step after `at`) it searches on the frozen model over the transforms the static prune and `runner.latched_prune` leave, writes `<work_dir>/deepaa_search/` (`final.npz`, `search_log.jsonl`, `search_config.json`, `state.pt`), and installs the policy; `deepaa_policy` in every later checkpoint. Run on stand-ins only |
 | `register.py` | imports `hooks`, `loops`, `madaug_hooks` and `transforms` so the registries see them |
 | `config.py` | `build(cfg, work_dir)`: the mmengine config from the composed one (Sensaug's `build_config`). The task's .py is the model and optimizer; the dataset yaml gives the pipelines and the crop (also `data_preprocessor.size`, which pads training and probe batches, as every Sensaug config did). Sensaug's per-(backbone, dataset) file differences come in through `configs/recipe/<task>_<dataset>.yaml`, which `configs/train.yaml` selects automatically (`optional recipe: ${task}_${dataset}`). There is one for every pair Sensaug could train (7 backbones × cityscapes / ade20k / pascal_voc12 / loveda / potsdam / synapse / a2i2haze, 5 on acdc, vitsam on cityscapes: 55), and each was checked (a scratchpad diff, no test) against Sensaug's resolved config: model, optimizer, schedule, max_iters, dataloaders, auto_scale_lr, pad size. They differ only in num_classes. Sensaug's file pick changes the model on some pairs: pspnet and deeplabv3plus become R50 on ade20k (pspnet on pascal_voc12 too), and vit becomes DeiT-B/16 on every dataset except cityscapes. On fallback pairs (no `*<dataset>*` file) it trains 320k iterations, and convnext and deeplabv3plus there pad 512×512 crops to 512×1024. Sensaug's deeplabv3plus on pascal_voc12 kept 19 classes against 21 labels, so it cannot have trained. Sensaug could not build swin/mae on acdc or any backbone on idd (no `_base_/datasets/acdc.py` / `idd.py` for its fallback), so those have no recipe; idd stays eval-only. Two dataset properties travel with the dataset yaml rather than a recipe: synapse's `mmseg.val_evaluator` (mIoU + mDice) and ACDC's `sa_ratio: 1.0` (Sensaug's SA `eval_ratio`, read by `configs/sa/default.yaml`). Sensaug's LoveDA `cfg.optimizer.lr *= 0.1` is not ported: it never reached `optim_wrapper`, so Sensaug's LoveDA runs trained at the full lr |
 
@@ -531,7 +749,11 @@ older in-flight job except the ones that fit beside it, so a slot can idle while
 job outlives a newer one. `tests/slurm/test_gate.py` runs the real bash against
 stand-in `squeue` / `sbatch`.
 The entry points they call are `train.py`, `scripts/probe.py` and `scripts/eval.py`; each
-one's docstring documents its flags. `scripts/probe.py` probes a dropaug run
+one's docstring documents its flags. `scripts/nms_prune.py` (CPU, no job) is PruneHook's
+NMS post hoc on one logged probe (`--work-dir <run> --iter N`, or `--probe-dir`), at one
+or more `--tau`, each probe pruned fresh. It writes `nms_prune.json` (P, who suppressed
+whom, the source log's sha256) and `R.json`, and prints `PRUNE_OPS="..."`. With several
+`--iter` it also writes the pairwise Jaccard of their prune sets (`jaccard.json`). `scripts/probe.py` probes a dropaug run
 (`--work-dir`, rebuilt from its `dropaug.yaml`, with its own host's ops) or any mmseg
 checkpoint (`--backbone`/`--task`, `--dataset`, `--method`): the model is the task +
 recipe for that pair, loaded strictly, and the ops, magnitudes and fade are the
@@ -541,15 +763,96 @@ without building a model. Only the sensaug method reads an SA snapshot
 
 | file | what |
 |---|---|
-| `train.sbatch` | `[host] [dataset] [selector] [seed]`, 4 GPUs, torchrun. From `train_nexus_gamma.sbatch`. Selector `none` is the λ=0 control; `nms` defaults `LAM` to 1 (it refuses anything else). The run dir is `experiments/<host>_<selector>-l<λ>_<dataset>_<backbone>_s<seed>`, and the script refuses to resume an existing run unless `ALLOW_RESUME=1`. With host `sensaug` it passes `--descending-MA --no-inv-aug`, as Sensaug's sbatch did on every run (`DESCENDING_MA=0` / `INV_AUG=1` turn them off). The static prune: `PRUNE_OPS="a b"`, `PRUNE_RANDOM=K`, `PRUNE_SEED`, `HOLD_NONE_PROB=0`, `PROBE_PRUNED=1` (train.py's `--pruned-augmentations` / `--random-prune-count` / `--random-prune-seed` / `--no-hold-none-prob` / `--probe-pruned`), and the run dir gets `prune_tag`'s suffix. Afterwards it queues `eval.sbatch` as a separate 1-GPU job |
+| `train.sbatch` | `[host] [dataset] [selector] [seed]`, 4 GPUs, torchrun. From `train_nexus_gamma.sbatch`. Selector `none` is the λ=0 control; `nms` defaults `LAM` to 1 (it refuses anything else). The run dir is `experiments/<host>_<selector>-l<λ>_<dataset>_<backbone>_s<seed>`, and the script refuses to resume an existing run unless `ALLOW_RESUME=1`. With host `sensaug` it passes `--descending-MA --no-inv-aug`, as Sensaug's sbatch did on every run (`DESCENDING_MA=0` / `INV_AUG=1` turn them off). The static prune: `PRUNE_OPS="a b"`, `PRUNE_RANDOM=K`, `PRUNE_SEED`, `HOLD_NONE_PROB=0`, `PROBE_PRUNED=1` (train.py's `--pruned-augmentations` / `--random-prune-count` / `--random-prune-seed` / `--no-hold-none-prob` / `--probe-pruned`), and the run dir gets `prune_tag`'s suffix (`PRUNE_POOL=probed`: `--random-prune-pool`). `KEEP_ITERS="N ..."` (`--keep-checkpoints`) keeps those checkpoints in `<run>/keep/`. `FORK_FROM=<run>/keep/iter_<N>.pth` (`--fork-from`) starts a new run there, named `..._fork-i<N>` (`dropaug.config.fork_tag`, spelled the same): mmengine resumes from that file (iteration, optimizer, scheduler, message hub, the MADAug policy), and train.py refuses a fork whose config differs from the source run's beyond the prune, the selector, the probe schedule, `keep_checkpoints` and `host.policy_file` (`train.FORK_KEYS`; the last for the search-then-train continuation), or whose prune doesn't hold the no-op share. `FAA_POLICY=initial` trains faster_autoaugment on the search's starting policy. `NMS_NULL=random NMS_NULL_SEED=S` (selector nms) is NMS's matched null, its own arm in the run name. The overrides go after `--`, so a list flag can't take them. Afterwards it queues `eval.sbatch` as a separate 1-GPU job |
 | `probe.sbatch` | `<exp_dir>`: a post-hoc probe of one checkpoint of a dropaug run (`CKPT=best\|last\|path`) into `<exp_dir>/probe/<ckpt>[_<PROBE_TAG>]`. Or `<checkpoint.pth> <backbone> <dataset> <method>`: any checkpoint, probed with that method's ops, into `<ckpt dir>/probe/<ckpt>_<method>[_<PROBE_TAG>]` (`CLUSTER`, `DATA_ROOT`, `MAGNITUDES_PATH`). It refuses a directory that already holds a gradient log, because two Gs in one file would pool |
-| `faa_search.sbatch` | `[dataset]`, 1 GPU: Faster AutoAugment's policy search (`scripts/faa_search.py`) into `<WORK_DIR>/faa_search_<dataset>[_<SEARCH_TAG>]/` (`final.npz`, `epoch_<N>.npz`, `search_log.jsonl`). `SEARCH_ARGS` for flags and Hydra overrides (`host.search.*`). Gated like the others. `train.sbatch faster_autoaugment <dataset>` reads its `final.npz` by default (`FAA_POLICY` overrides) and refuses to start without one |
+| `faa_search.sbatch` | `[dataset]`, 1 GPU: Faster AutoAugment's policy search (`scripts/faa_search.py`) into `<WORK_DIR>/faa_search_<dataset>[_prune-...][_<SEARCH_TAG>]/` (`final.npz`, `epoch_<N>.npz`, `search_log.jsonl`, `prune.json`). `PRUNE_OPS="A B"` leaves those ops out of the search, `PRUNE_RANDOM=K` / `PRUNE_SEED` K more drawn from the probed ops (`--prune-ops` / `--random-prune` / `--random-prune-seed`, resolved by the training run's `prune_of`, so the dir gets `prune_tag`'s suffix; a dry run first prints the dir). `SEARCH_ARGS` for flags and Hydra overrides (`host.search.*`). Gated like the others. `train.sbatch faster_autoaugment <dataset>` reads its `final.npz` by default (`FAA_POLICY` overrides) and refuses to start without one |
 | `eval.sbatch` | `<exp_dir>`: `dropaug.eval` on one checkpoint → `<exp_dir>/eval/<ckpt>.jsonl`. Resumes on resubmit |
 | `test.sbatch` | 1 GPU, gated like a probe: `pytest -x` (`PYTEST_ARGS`, default the vocab, hosts, tasks, probe and config tests), then `scripts/smoke_diff_hosts.py` (randaugment_diff at cifar10's level, augmix_diff, smartsampling_diff: a batch augmented on the GPU, every op probed at the host's own bins, faded as its yaml fades) and `scripts/smoke_faster_autoaugment.py` |
 | `matrix.sbatch` | array over `HOSTS` × `DATASETS` × `SELECTORS` × `SEEDS`, one 4-GPU `train.sbatch` per task, at `%1` (A6000) or `%4` (`GPU=a5000`). `bash slurm/matrix.sbatch` lists the grid; `--submit` submits it through the gate; `POINTS=3,17` reruns chosen indices |
 | `gate.sh` | the job cap: `gate_sbatch`, `gate_deps`, `gate_check_running`, `gate_array_throttle` (sourced by `common.sh`, `submit.sh`, `matrix.sbatch`) |
 | `submit.sh` | `[GPU=a5000] bash slurm/submit.sh <name> <script> [args]`: sbatch with the name prefixed to the job name, through the gate. `eval.sbatch` passes through ungated |
 | `common.sh` | sourced by every sbatch script: log grouping into `slurm/logs/<job-name>/`, conda/module setup, checkpoint resolution, and `gate.sh` |
+
+## Probe-and-prune on methods that train an augmentation network (the user's rule, 2026-11-04)
+
+The probe is on the run's own task model, the one trained on the method's augmentations and
+reported (for an online method, the model its policy network trains against; for a
+search-then-train method, the model trained up to the pause, never the search's own
+segmentor, which in FAA is also the critic), never on the augmentation network itself
+(FAA's critic, MADAug's meta-gradient), at a fixed reference magnitude
+(`probe.magnitude_mode=fixed`, `probe.magnitude=0.5`, a strength), `probe.n_probe=500`,
+then NMS at τ = 0.5. The decision point is 25% of training: SensAug's round 4
+(`hosts/sensaug.round_fire_iters`: round r at (r+1)·max_iters/20; rounds 10 and 16 at 0.55
+and 0.85 for the stability ablation). The prune removes the ops from the method's policy
+network, so the network shrinks (FACTS D9, D10), by the one rule every host with a no-op
+outcome keeps where the network is pruned mid-training: the pruned mass goes to the
+survivors by share, the no-op share held. Pruned ops are never drawn in training: every
+host keeps that (checked on every training host, static and online, 2026-11-04), and
+`tasks.augment`'s guard raises if one ever is. Everything goes through `slurm/submit.sh`
+under the job cap. Two kinds of method:
+
+**Search, then train** (Faster AutoAugment, Deep AutoAugment; the rule going forward for this
+kind: AutoAugment and Fast AutoAugment have no search in dropaug). The loop is train →
+prune → run the search → resume training (the user's rule, reaffirmed 2026-11-07): the prune
+comes from the trained model, so it precedes the search, and the search runs over what is
+left. Faster AutoAugment does it across jobs: one trunk (the train step, shared by every
+arm), then per arm a search and a fork that resumes the trunk's checkpoint:
+
+1. The trunk trains on the search's starting policy (dda's init, every op equal):
+   `FAA_POLICY=initial train.sbatch faster_autoaugment <ds> none <seed>`, `KEEP_ITERS` at
+   0.25·max_iters, and in `TRAIN_ARGS` `probe.magnitude_mode=fixed probe.n_probe=500
+   probe.schedule.interval=null probe.schedule.iters=[...]` at 0.25 (and 0.55 / 0.85 for
+   Jaccard; no quotes and no spaces in the list: `split_args` splits on whitespace and
+   keeps quotes). The probe at 0.25 is on the weights of `iter_<N>.pth`: the probe hook runs
+   before CheckpointHook in `after_train_iter`, and the probe changes no weight.
+2. `scripts/nms_prune.py --work-dir <trunk> --iter <N>` → P (CPU, as soon as the trunk
+   passes N).
+3. One search per arm (`faa_search.sbatch <ds>`, 1 GPU each): the control over all 26 ops,
+   `PRUNE_OPS=P`, and the random-K null `PRUNE_RANDOM=|P| PRUNE_SEED=0/1/2` (drawn from the
+   probed ops). A pruned search's policy holds only the ops left, so it is smaller and
+   each step applies fewer ops (`search_log.jsonl`: `policy_params`, `step_seconds`).
+4. Each arm continues the trunk: `FORK_FROM=<trunk>/keep/iter_<N>.pth
+   FAA_POLICY=<arm's search>/final.npz PRUNE_OPS=<the arm's left-out ops>` (the run name
+   and `prune.json` then say what the search left out; `config.check` warns otherwise). A
+   fork can't turn probing off (the host must probe): give it one probe at the last
+   iteration. `eval.sbatch` is queued by each train job.
+
+Deep AutoAugment does it in one run (the user's rule, 2026-11-05: train, pause, prune,
+resume), since its search freezes a model trained for a while (`pretrain()`), which the run's
+own model at the pause is: `DEEPAA_POLICY=search train.sbatch deep_autoaugment <ds> <arm>
+<seed>`, `TRAIN_ARGS` with `probe.magnitude_mode=fixed probe.n_probe=500
+probe.schedule.interval=null probe.schedule.iters=[<0.25·max_iters>,...]` (later ones
+in `probe.schedule.control_iters`, for Jaccard) and the search's budget in `host.search.*`.
+Until the pause the host applies nothing (DeepAA pretrains on its default augmentation
+only); at it the probe gives R, PruneHook latches M, `DeepAASearchHook` searches the
+transforms left on the frozen model (each step's cost scales with them), installs the
+policy, and training resumes. The arms are `none` (searches all 139), `nms` and
+`NMS_NULL=random NMS_NULL_SEED=0/1/2`.
+
+**Online** (MADAug, Adversarial AutoAugment, whose policy networks train alongside the
+model): train normally, probing and pruning on the default 8-interval schedule
+(`max_iters/8`), selector nms. The arms are
+whole runs from iteration 0: the control `train.sbatch madaug <ds> none <seed>`, NMS
+`train.sbatch madaug <ds> nms <seed>`, and the matched null `NMS_NULL=random
+NMS_NULL_SEED=0/1/2` (at each probe, as many ops as NMS newly prunes, drawn at random),
+each with `probe.magnitude_mode=fixed probe.n_probe=500` in `TRAIN_ARGS`. PruneHook's
+latched M goes to `runner.latched_prune`, and MADAugPolicyHook prunes the policy network
+to it before the next step (p(Identity) held by the frozen logits); AdvAAControllerHook
+removes the types left with no bin from the controller, masks the rest, closes the epoch
+early and samples new policies (`train.sbatch adversarial_autoaugment <ds> nms <seed>`,
+the same arms). The last probe falls at the last iteration, so its prune changes nothing. Pruning shrinks MADAug's network but
+saves about no compute, because the relaxation blends single ops into one image.
+
+What the user's earlier plan assumed that the code already settles: geometric ops warp the
+label (`apply_op` refuses one that doesn't), so NMS runs on every row; the blend probe is
+`fade`; no vocab op has a straight-through magnitude gradient. The flips are out of
+probing and pruning, and SamplePairing stays unprobed (exempt from NMS, out of the
+`probed` pool). Superseded (2026-11-04): FAA pruned at 25% of training on the already
+searched policy, and MADAug forked from a trunk; the fork and keep-checkpoint machinery
+stays (FAA's continuation uses it). Flagged, not changed: FAA's Sharpness keeps dda's
+magnitude (the plan lists it as magnitude-free); on `autoaugment_diff` an online q and the
+static prune of the same ops give different policies (AutoAugment's tilt is not
+invariant to q's scale), though neither ever draws a pruned op.
 
 ## Parked ideas (not started, low priority)
 

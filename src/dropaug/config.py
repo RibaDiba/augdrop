@@ -41,6 +41,7 @@ from, except for an mmseg task's .py file, which train.py snapshots into the run
 import hashlib
 import inspect
 import os
+import re
 from typing import Iterable, List, Optional, Sequence
 
 import numpy as np
@@ -53,16 +54,21 @@ __all__ = [
     "RUN_FILE",
     "check",
     "compose",
+    "checkpoint_interval",
     "fade_of",
+    "fork_iter",
+    "fork_tag",
     "group_options",
     "host_of",
     "load",
     "magnitudes_of",
     "policy_of",
+    "deepaa_search_of",
     "search_of",
     "prune_of",
     "prune_tag",
     "run_name",
+    "unprobed_ops",
     "save",
     "selector_spec",
     "task_for_backbone",
@@ -182,12 +188,48 @@ def to_python(node):
 
 
 def run_name(cfg: DictConfig) -> str:
-    """``<host>_<selector>[-l<lam>]_<dataset>_<backbone>_s<seed>[_prune-...]``, the name
-    slurm/train.sbatch gives a run directory (``prune_tag`` for the suffix)."""
+    """``<host>_<selector>[-l<lam>]_<dataset>_<backbone>_s<seed>[_prune-...][_fork-i<N>]
+    [_deepaa-search]``, the name slurm/train.sbatch gives a run directory (``prune_tag`` and
+    ``fork_tag`` for the suffixes; the last for a deep_autoaugment run that searches in the
+    run, ``DEEPAA_POLICY=search``)."""
     selector = cfg.choices.get("selector", cfg.selector.name)
+    null = cfg.selector.get("null_arm")
+    if null:
+        # NMS's matched null is its own arm: nms-random<seed>-l1.
+        selector = f"{selector}-{null}{int(cfg.selector.get('null_seed', 0))}"
     arm = "none" if cfg.selector.get("control") else f"{selector}-l{float(cfg.selector.lam):g}"
     host = cfg.choices.get("host", cfg.host.name)
-    return f"{host}_{arm}_{cfg.dataset.name}_{cfg.task.backbone}_s{cfg.seed}{prune_tag(cfg)}"
+    search = "_deepaa-search" if cfg.host.get("name") == "deep_autoaugment" and cfg.host.get("policy_file") == "search" else ""
+    return f"{host}_{arm}_{cfg.dataset.name}_{cfg.task.backbone}_s{cfg.seed}{prune_tag(cfg)}{fork_tag(cfg)}{search}"
+
+
+#: mmengine's checkpoint names (``iter_<N>.pth``, ``best_mIoU_iter_<N>.pth``): N is the
+#: completed iteration the weights are from.
+_CHECKPOINT_ITER = re.compile(r"iter_(\d+)\.pth$")
+
+
+def fork_iter(path: str) -> int:
+    """The completed iteration of the checkpoint ``path`` names (mmengine's
+    ``iter_<N>.pth``). Raises ConfigError on any other name: a fork's run name and its
+    resumed iteration both come from it."""
+    match = _CHECKPOINT_ITER.search(os.path.basename(str(path)))
+    if not match:
+        raise ConfigError(f"fork_from {path!r} is not an mmengine iter_<N>.pth checkpoint")
+    return int(match.group(1))
+
+
+def fork_tag(cfg: DictConfig) -> str:
+    """The run name's fork suffix: ``_fork-i<N>`` for a run forked from another run's
+    ``iter_<N>.pth`` (``fork_from``), else empty."""
+    path = cfg.get("fork_from")
+    return f"_fork-i{fork_iter(path)}" if path else ""
+
+
+def checkpoint_interval(cfg: DictConfig) -> int:
+    """Iterations between the checkpoints a run saves: the task's ``checkpoint_interval``,
+    else max_iters // 20. The mmseg builder sets CheckpointHook's interval from it."""
+    task = cfg.task
+    return max(1, int(task.get("checkpoint_interval") or int(task.max_iters) // 20))
 
 
 def _names_hash(names: Iterable[str]) -> str:
@@ -200,7 +242,8 @@ def _names_hash(names: Iterable[str]) -> str:
 def prune_tag(cfg: DictConfig, prune=None) -> str:
     """The run name's prune suffix: empty with nothing pruned, else ``_prune-`` and
     ``o<N>.<hash>`` for N named ops, ``r<K>`` for K drawn (``r<K>s<seed>`` when
-    ``prune.seed`` is not the run's seed), joined by ``-``. ``hold_none_prob`` and
+    ``prune.seed`` is not the run's seed, then ``p`` when the draw's pool is
+    ``prune.pool=probed``), joined by ``-``. ``hold_none_prob`` and
     ``probe`` are not in it: a run differing only there needs a RUN_TAG."""
     prune = prune_of(cfg) if prune is None else prune
     if not prune:
@@ -209,7 +252,11 @@ def prune_tag(cfg: DictConfig, prune=None) -> str:
     if prune.named:
         parts.append(f"o{len(prune.named)}.{_names_hash(prune.named)}")
     if prune.random:
-        parts.append(f"r{prune.random}" + ("" if prune.seed == int(cfg.seed) else f"s{prune.seed}"))
+        parts.append(
+            f"r{prune.random}"
+            + ("" if prune.seed == int(cfg.seed) else f"s{prune.seed}")
+            + ("p" if prune.pool_rule == POOL_PROBED else "")
+        )
     return "_prune-" + "-".join(parts)
 
 
@@ -239,6 +286,7 @@ def host_kwargs(cfg: DictConfig, prune=None) -> dict:
     kwargs.pop("fade", None)  # the probe's, not the host's: see fade_of
     kwargs.pop("policy", None)  # the policy hook's, not the host's: see policy_of
     kwargs.pop("search", None)  # Faster AutoAugment's search, not the host's: see search_of
+    kwargs.pop("controller", None)  # Adversarial AutoAugment's controller hook's: see controller_of
     name = kwargs.pop("name")
     if _takes_vocabulary(name):
         kwargs["vocabulary"] = list(vocab_of(cfg))
@@ -257,6 +305,11 @@ def host_of(cfg: DictConfig, prune=None):
     kwargs = host_kwargs(cfg, prune)
     return build_host(kwargs.pop("name"), **kwargs)
 
+
+#: ``prune.pool``: the random draw's pool. ``all`` is Sensaug's (the vocabulary minus the
+#: named ops); ``probed`` also leaves out the ops the probe gives no row under the host's
+#: fade (no R-based selector can prune those), for a random-K null matched to NMS.
+POOL_ALL, POOL_PROBED = "all", "probed"
 
 #: The sa keys the prune: block replaced, and where each went.
 _MOVED_SA_KEYS = {"pruned_augmentations": "prune.ops", "hold_none_prob": "prune.hold_none_prob"}
@@ -282,14 +335,19 @@ def prune_of(cfg: DictConfig, vocabulary: Optional[Sequence[str]] = None):
         raise ConfigError(f"these keys moved to the prune: block (configs/train.yaml): {', '.join(moved)}")
 
     block = to_python(cfg.get("prune")) or {}
-    unknown = sorted(set(block) - {"ops", "random", "seed", "hold_none_prob", "probe"})
+    unknown = sorted(set(block) - {"ops", "random", "seed", "hold_none_prob", "probe", "pool"})
     if unknown:
-        raise ConfigError(f"prune: unknown key(s) {unknown}; expected ops, random, seed, hold_none_prob, probe")
+        raise ConfigError(f"prune: unknown key(s) {unknown}; expected ops, random, seed, hold_none_prob, probe, pool")
+    pool_rule = block.get("pool") or POOL_ALL
+    if pool_rule not in (POOL_ALL, POOL_PROBED):
+        raise ConfigError(f"prune.pool must be {POOL_ALL!r} or {POOL_PROBED!r}, got {pool_rule!r}")
     exclude = ()
     if cfg.host.get("name") == "sensaug" and sa_cfg.get("remove_H"):
         from sa import REMOVE_H_NAMES
 
-        exclude = REMOVE_H_NAMES
+        exclude = tuple(REMOVE_H_NAMES)
+    if pool_rule == POOL_PROBED:
+        exclude = exclude + unprobed_ops(cfg)
     ops = block.get("ops") or []
     if isinstance(ops, str):
         raise ConfigError(f"prune.ops must be a list of op names, got the string {ops!r}")
@@ -302,9 +360,23 @@ def prune_of(cfg: DictConfig, vocabulary: Optional[Sequence[str]] = None):
             exclude=exclude,
             hold_none_prob=block.get("hold_none_prob", True),
             probe=block.get("probe", False),
+            pool_rule=pool_rule,
         )
     except (TypeError, ValueError) as error:
         raise ConfigError(str(error)) from None
+
+
+def unprobed_ops(cfg: DictConfig) -> tuple:
+    """The vocab ops the probe gives no row under the host's fade (``probe.resolve_methods``
+    says ``unprobed``: no magnitude and not faded, or ``couples_images``), in vocab order.
+    R sets them aside, so no R-based selector can prune them."""
+    from probe import resolve_methods
+    from probe.grad_collect import UNPROBED
+
+    ops = vocab_of(cfg)
+    fade, _ = fade_of(cfg)
+    methods = resolve_methods(ops, fade)
+    return tuple(name for name in ops if methods[name] == UNPROBED)
 
 
 def fade_of(cfg: DictConfig) -> tuple:
@@ -322,11 +394,38 @@ def policy_of(cfg: DictConfig) -> Optional[dict]:
     return None if block is None else dict(block)
 
 
+def controller_of(cfg: DictConfig) -> Optional[dict]:
+    """The host's ``controller:`` block (Adversarial AutoAugment's controller,
+    AdvAAControllerHook's kwargs), or None for a host without one."""
+    block = to_python(cfg.host.get("controller"))
+    return None if block is None else dict(block)
+
+
 def search_of(cfg: DictConfig) -> Optional[dict]:
     """The host's ``search:`` block (Faster AutoAugment's policy search,
     scripts/faa_search.py), or None for a host without one."""
     block = to_python(cfg.host.get("search"))
     return None if block is None else dict(block)
+
+
+#: DeepAASearchHook's own keys in Deep AutoAugment's ``search:`` block; the rest are
+#: ``deepaa.Settings``.
+_DEEPAA_HOOK_KEYS = ("at", "save_every", "seed")
+
+
+def deepaa_search_of(cfg: DictConfig) -> Optional[dict]:
+    """DeepAASearchHook's kwargs for a deep_autoaugment run that searches in the run
+    (``host.policy_file: search``), from the host's ``search:`` block, ``at`` resolved to
+    a completed iteration (a fraction of max_iters below 1, else the iteration); None for
+    any other run."""
+    if cfg.host.get("name") != "deep_autoaugment" or cfg.host.get("policy_file") != "search":
+        return None
+    block = search_of(cfg)
+    if block is None:
+        return None
+    at = float(block.get("at", 0.25))
+    block["at"] = int(round(at * int(cfg.task.max_iters))) if at < 1 else int(at)
+    return block
 
 
 def selector_spec(cfg: DictConfig) -> dict:
@@ -351,6 +450,39 @@ def magnitudes_of(magnitude):
 
 
 # --- checking -----------------------------------------------------------------------------
+
+
+def _check_deepaa_search(cfg: DictConfig, host, backend: str, selector_name: str) -> List[str]:
+    """Deep AutoAugment's search in the run (``policy_file: search``): the errors."""
+    import deepaa
+
+    errors: List[str] = []
+    block = search_of(cfg)
+    if block is None:
+        return ["host.policy_file=search needs the host's search: block (DeepAASearchHook's settings)"]
+    if backend != "mmseg":
+        errors.append(f"host.policy_file=search runs DeepAASearchHook, which is mmseg's; the task is {backend}")
+    hook = deepaa_search_of(cfg)
+    try:
+        deepaa.Settings(**{k: v for k, v in hook.items() if k not in _DEEPAA_HOOK_KEYS})
+    except (TypeError, ValueError) as error:
+        errors.append(f"host.search: {error}")
+    at, max_iters = hook["at"], int(cfg.task.max_iters)
+    interval = checkpoint_interval(cfg)
+    if not 0 < at < max_iters:
+        errors.append(f"host.search.at is iteration {at}; the search needs one inside (0, {max_iters})")
+    elif at % interval:
+        errors.append(
+            f"host.search.at is iteration {at}, off the checkpoint grid (every {interval}): a job stopped "
+            f"in the search could not resume at the pause (set task.checkpoint_interval or host.search.at)"
+        )
+    if selector_name == "nms" and host.probe_role(at) != "active":
+        errors.append(
+            f"selector nms prunes the search space at the pause, but the probe has no active probe at "
+            f"iteration {at} (probe.schedule.iters / interval)"
+        )
+    return errors
+
 
 
 def check(cfg: DictConfig, *, training: bool) -> List[str]:
@@ -417,6 +549,8 @@ def check(cfg: DictConfig, *, training: bool) -> List[str]:
                 f"pruning {list(pruning.ops)} on host {name!r} also prunes {implied}: every "
                 f"sub-policy that applied them applies a pruned op too"
             )
+        if pruning.pool_rule != POOL_ALL and not pruning.random:
+            warnings.append(f"prune.pool={pruning.pool_rule} set, but nothing is drawn at random: no effect")
         if not cfg.augment:
             warnings.append(
                 f"prune.* prunes {list(pruning.ops)}, but augment=false trains on clean images: "
@@ -426,7 +560,7 @@ def check(cfg: DictConfig, *, training: bool) -> List[str]:
         block = to_python(cfg.get("prune")) or {}
         inert = [
             f"prune.{key}={block[key]}"
-            for key, default in (("hold_none_prob", True), ("probe", False))
+            for key, default in (("hold_none_prob", True), ("probe", False), ("pool", POOL_ALL))
             if key in block and block[key] != default
         ]
         if inert:
@@ -491,7 +625,44 @@ def check(cfg: DictConfig, *, training: bool) -> List[str]:
                     )
                 if policy.get("hypergrad", "exact") not in madaug.MODES:
                     errors.append(f"host.policy.hypergrad must be one of {madaug.MODES}, got {policy['hypergrad']!r}")
+                if int(policy.get("n_layers", 0)) > 0 and (host.pruned() or selector_name == "nms"):
+                    errors.append(
+                        f"host.policy.n_layers={policy['n_layers']}: a pruned MADAug policy must be linear "
+                        f"(n_layers=0), since its frozen logits would need the hidden layers as they were "
+                        f"at each prune (madaug.Projection.prune)"
+                    )
+            if name == "deep_autoaugment" and cfg.host.get("policy_file") == "search":
+                errors.extend(_check_deepaa_search(cfg, host, backend, selector_name))
+            if controller_of(cfg) is not None and backend != "mmseg":
+                errors.append(
+                    f"host {name!r} trains its controller with AdvAAControllerHook, which is mmseg's; "
+                    f"task {choices.get('task')!r} is {backend} (set augment=false to probe only)"
+                )
+            # A policy searched over a subset (scripts/faa_search.py --prune-ops / --random-prune)
+            # never applies the ops it left out; the run's prune should say so, or its name and
+            # prune.json don't.
+            searched_out = set(str((getattr(host, "policy_meta", None) or {}).get("pruned_ops") or "").split())
+            unlisted = sorted(searched_out - set(host.pruned()))
+            if unlisted:
+                warnings.append(
+                    f"host.policy_file was searched without {unlisted}, which the run's prune doesn't list: "
+                    f"they are never applied, but the run name and prune.json won't say so (PRUNE_OPS=...)"
+                )
+            copies = int(getattr(host, "num_copies", 1))
+            if copies > 1 and backend != "mmseg":
+                errors.append(
+                    f"host {name!r} trains on {copies} copies of each image (num_copies), which only "
+                    f"the mmseg preprocessor makes; task {choices.get('task')!r} is {backend}"
+                )
         max_iters = int(cfg.task.max_iters)
+        search = deepaa_search_of(cfg) if cfg.augment else None
+        if search is not None and selector_name == "nms":
+            later = [i for i in range(search["at"] + 1, max_iters + 1) if host.probe_role(i) == "active"]
+            if later:
+                warnings.append(
+                    f"active probes after the search (iterations {later[:3]}{'...' if len(later) > 3 else ''}) "
+                    f"prune the searched policy online; the recipe's later probes are control_iters"
+                )
         if not any(host.should_probe(i) for i in range(1, max_iters + 1)):
             warnings.append(
                 f"host {name!r} never probes within {max_iters} iterations: no R, and the "
@@ -524,6 +695,37 @@ def check(cfg: DictConfig, *, training: bool) -> List[str]:
                     f"{host.round_interval} iterations; the mmseg builder sets val_interval to the "
                     f"round interval for this host"
                 )
+
+    # Checkpoints kept past max_keep_ckpts, and the checkpoint a fork starts from.
+    keep = to_python(cfg.get("keep_checkpoints")) or []
+    if keep:
+        interval, max_iters = checkpoint_interval(cfg), int(cfg.task.max_iters)
+        bad = [n for n in keep if isinstance(n, bool) or not isinstance(n, int) or not 0 < n <= max_iters]
+        off_grid = [n for n in keep if n not in bad and n % interval and n != max_iters]
+        if bad:
+            errors.append(f"keep_checkpoints {bad} are not iterations in (0, {max_iters}]")
+        if off_grid:
+            errors.append(
+                f"keep_checkpoints {off_grid} are not on the checkpoint grid (every {interval} "
+                f"iterations): no checkpoint is saved there to keep"
+            )
+    if cfg.get("fork_from"):
+        block = to_python(cfg.get("prune")) or {}
+        if not block.get("hold_none_prob", True) and (block.get("ops") or block.get("random")):
+            # The owner's rule for every host with a no-op outcome: a fork is a matched
+            # comparison with the run it forks, and a growing no-op share would train the
+            # pruned branch on less augmentation than its control.
+            errors.append(
+                "a fork's prune must hold the no-op share (prune.hold_none_prob=true): the pruned "
+                "mass goes to the surviving ops, so the fork and its source augment as often"
+            )
+        try:
+            at = fork_iter(cfg.fork_from)
+        except ConfigError as error:
+            errors.append(str(error))
+        else:
+            if not 0 < at < int(cfg.task.max_iters):
+                errors.append(f"fork_from is at iteration {at}; a fork needs one inside (0, {cfg.task.max_iters})")
 
     if errors:
         raise ConfigError("the config doesn't fit together:\n  - " + "\n  - ".join(errors))

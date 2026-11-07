@@ -31,7 +31,10 @@ policy:
 # as the method draws it. The four enhance ops go through their exact tangent and the five
 # geometric ones by finite differences, the label moving with the image (as
 # trivialaugment.yaml). The ops with no derivative in their magnitude are faded in:
-# Solarize's and Posterize's 8-bit steps, Cutout's hard edge, and the four with none.
+# Solarize's and Posterize's 8-bit steps, Cutout's hard edge, and AutoContrast, Invert
+# and Equalize. Flip is out of probing and pruning: it gets an unprobed NaN row, which R
+# sets aside and no selector prunes (faded, its image is a ghost of two frames that no
+# one label matches).
 fade:
   ops:
     - randaug_default.AutoContrast
@@ -40,5 +43,4 @@ fade:
     - randaug_default.Solarize
     - randaug_default.Posterize
     - madaug.Cutout
-    - madaug.Flip
   at: 1.0

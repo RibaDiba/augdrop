@@ -50,7 +50,7 @@ from .decide import CLEAR, KEEP, PUBLISH, decide, publication, redundancy_of
 from .dpp import DPP
 from .kl_reweight import KLReweight, measured_red, reweight
 from .mrmr import MRMR
-from .nms import NMS, TAU, NmsResult, prune_weights
+from .nms import NMS, NULLS, TAU, NmsResult, nms_analysis, nms_select, prune_weights, random_null
 from .qpfs import QPFS
 from .random_k import RandomK, null_band
 from .relevance_only import RelevanceOnly
@@ -69,6 +69,7 @@ __all__ = [
     "MODES",
     "MRMR",
     "NMS",
+    "NULLS",
     "NmsResult",
     "PUBLISH",
     "QPFS",
@@ -84,11 +85,14 @@ __all__ = [
     "cover_pairs",
     "decide",
     "measured_red",
+    "nms_analysis",
+    "nms_select",
     "null_band",
     "pairwise",
     "prune_weights",
     "publication",
     "ramp_lambda",
+    "random_null",
     "redundancy_of",
     "reweight",
 ]

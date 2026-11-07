@@ -62,6 +62,11 @@ set -o pipefail
 #   LAM=0.25             forced to 0 for selector none; defaults to 1 for nms, which
 #                        prunes and refuses any other value. Normalised like
 #                        dropaug.config.run_name does (%g), so LAM=1.0 names the run -l1
+#   NMS_NULL=random  NMS_NULL_SEED=0
+#                        selector nms only: its matched null (selection.random_null), at
+#                        each probe as many ops as NMS newly prunes, drawn at random from
+#                        the ops it ranked (selector.null_arm / null_seed). Its own
+#                        arm in the run name: nms-random<seed>-l1
 #   CLUSTER=nexus        configs/cluster/<CLUSTER>.yaml: data and checkpoint paths
 #   WORK_DIR=./experiments          the run goes in WORK_DIR/EXP_NAME
 #   EXP_NAME                        default <host>_<selector>-l<lam>_<dataset>_<backbone>_s<seed>
@@ -87,20 +92,46 @@ set -o pipefail
 #                                   (--random-prune-count)
 #   PRUNE_SEED=S                    the draw's seed (default: the run's seed, so a seed sweep
 #                                   is a sweep over draws) (--random-prune-seed)
+#   PRUNE_POOL=probed               the draw also leaves out the ops the probe gives no row
+#                                   (SamplePairing, the flips), which NMS can't prune: the
+#                                   random-K null matched to an NMS prune (--random-prune-pool)
 #   HOLD_NONE_PROB=0                P(no augmentation) rises as ops are pruned (Sensaug's
 #                                   default); by default it is held (--no-hold-none-prob)
 #   PROBE_PRUNED=1                  the probe still measures the pruned ops (--probe-pruned)
-#                                   A prune adds _prune-o<N>.<hash>-r<K>[s<S>] to the run name
+#                                   A prune adds _prune-o<N>.<hash>-r<K>[s<S>][p] to the run name
 #                                   (dropaug.config.prune_tag): N named ops (hash of their
-#                                   sorted names), K drawn, S when PRUNE_SEED is not the seed.
+#                                   sorted names), K drawn, S when PRUNE_SEED is not the seed,
+#                                   p when PRUNE_POOL=probed.
 #                                   HOLD_NONE_PROB / PROBE_PRUNED are not in it: use RUN_TAG.
 #                                   Give named ops through PRUNE_OPS, not TRAIN_ARGS, so the
 #                                   run name carries them.
+#   DEEPAA_POLICY=<path>            host deep_autoaugment only: its policy (host.policy_file).
+#                                   Default the published ImageNet one in the DeepAA
+#                                   submodule, third_party/DeepAA/policy_port/
+#                                   policy_DeepAA_imagenet_1.npz. DEEPAA_POLICY=search is
+#                                   the probe-and-prune recipe: no policy until the pause at
+#                                   host.search.at (25%), where the probe prunes and DeepAA's
+#                                   search runs in the job over what is left, then training
+#                                   resumes on it. The run name gets _deepaa-search (before
+#                                   any RUN_TAG). Budget the search in host.search.* through
+#                                   TRAIN_ARGS; the job's --time must cover it
 #   FAA_POLICY=<path>               host faster_autoaugment only: its searched policy
 #                                   (host.policy_file). Default
 #                                   <WORK_DIR>/faa_search_<dataset>/final.npz, what
 #                                   slurm/faa_search.sbatch <dataset> writes; the run
-#                                   refuses to start without one
+#                                   refuses to start without one. FAA_POLICY=initial trains
+#                                   on the search's starting policy (every op equal, p = mu
+#                                   = 0.5): the trunk of the search-then-train recipe,
+#                                   probed at 25% before any search runs
+#   FORK_FROM=<run>/keep/iter_<N>.pth
+#                                   a fork: a new run that starts where another run's
+#                                   checkpoint left off (train.py --fork-from), named
+#                                   ..._fork-i<N>. Its config must equal the source run's
+#                                   but for the prune, the selector, the probe schedule and
+#                                   KEEP_ITERS (train.py refuses anything else)
+#   KEEP_ITERS="40000 88000"        those iterations' checkpoints outlive max_keep_ckpts,
+#                                   hard-linked into <run>/keep/ (--keep-checkpoints): the
+#                                   points a fork can start from. On the checkpoint grid
 #   ALLOW_RESUME=1                  continue a run that already has a checkpoint
 #                                   (passes --resume)
 #   EVAL=0                          don't queue slurm/eval.sbatch afterwards
@@ -115,7 +146,8 @@ set -o pipefail
 #   [--lam F] [--seed N] [--work-dir DIR (the run directory itself)]
 #   [--launcher none|pytorch] [--resume] [--descending-MA] [--no-inv-aug] [--dry-run]
 #   [--pruned-augmentations OP ...] [--random-prune-count N] [--random-prune-seed S]
-#   [--no-hold-none-prob] [--probe-pruned] [overrides ...]
+#   [--random-prune-pool all|probed] [--no-hold-none-prob] [--probe-pruned]
+#   [--fork-from CKPT] [--keep-checkpoints N ...] [overrides ...]
 # ==========================================================================
 
 # `${1-default}`, not `${1:-default}`: an explicitly empty argument is then
@@ -158,6 +190,21 @@ if [ "${SELECTOR}" = "none" ]; then
 else
     _arm="${SELECTOR}-l${LAM}"
 fi
+# NMS's matched null: its own arm, nms-<null><seed>-l<lam>, as dropaug.config.run_name
+# spells it.
+if [ -n "${NMS_NULL:-}" ]; then
+    [ "${SELECTOR}" = "nms" ] || { echo "ERROR: NMS_NULL is for selector nms, got '${SELECTOR}'." >&2; exit 1; }
+    case "${NMS_NULL}" in
+        random) ;;
+        *) echo "ERROR: NMS_NULL='${NMS_NULL}' must be random." >&2; exit 1 ;;
+    esac
+    NMS_NULL_SEED="${NMS_NULL_SEED:-0}"
+    if ! [[ "${NMS_NULL_SEED}" =~ ^(0|[1-9][0-9]*)$ ]]; then
+        echo "ERROR: NMS_NULL_SEED='${NMS_NULL_SEED}' must be a non-negative integer without leading zeros." >&2
+        exit 1
+    fi
+    _arm="${SELECTOR}-${NMS_NULL}${NMS_NULL_SEED}-l${LAM}"
+fi
 
 # The static prune. No leading zeros: the run name must spell the numbers as python does.
 read -r -a PRUNE_OP_LIST <<< "${PRUNE_OPS:-}"
@@ -167,6 +214,10 @@ for _op in "${PRUNE_OP_LIST[@]}"; do
     esac
 done
 PRUNE_RANDOM="${PRUNE_RANDOM:-0}"
+case "${PRUNE_POOL:-all}" in
+    all|probed) ;;
+    *) echo "ERROR: PRUNE_POOL='${PRUNE_POOL}' must be all or probed." >&2; exit 1 ;;
+esac
 for _pair in "PRUNE_RANDOM:${PRUNE_RANDOM}" "PRUNE_SEED:${PRUNE_SEED-0}"; do
     if ! [[ "${_pair#*:}" =~ ^(0|[1-9][0-9]*)$ ]]; then
         echo "ERROR: ${_pair%%:*}='${_pair#*:}' must be a non-negative integer without leading zeros." >&2
@@ -184,10 +235,33 @@ if [ "${PRUNE_RANDOM}" != "0" ]; then
     if [ -n "${PRUNE_SEED:-}" ] && [ "${PRUNE_SEED}" != "${SEED}" ]; then
         _draw="${_draw}s${PRUNE_SEED}"
     fi
+    [ "${PRUNE_POOL:-all}" = "probed" ] && _draw="${_draw}p"
     _prune="${_prune:+${_prune}-}${_draw}"
 fi
 
-EXP_NAME="${EXP_NAME:-${HOST}_${_arm}_${DATASET}_${BACKBONE}_s${SEED}${_prune:+_prune-${_prune}}${RUN_TAG:+_${RUN_TAG}}}"
+# A fork: dropaug.config.fork_tag, spelled the same way (N from mmengine's iter_<N>.pth).
+_fork=""
+if [ -n "${FORK_FROM:-}" ]; then
+    if ! [[ "$(basename "${FORK_FROM}")" =~ iter_([0-9]+)\.pth$ ]]; then
+        echo "ERROR: FORK_FROM=${FORK_FROM} is not an mmengine iter_<N>.pth checkpoint." >&2; exit 1
+    fi
+    _fork="fork-i$((10#${BASH_REMATCH[1]}))"
+    # Made absolute while its directory is there; whether the file must exist is decided
+    # once EXP_DIR is known (a fork resuming from its own checkpoint doesn't read it).
+    if _fork_dir="$(cd "$(dirname "${FORK_FROM}")" 2>/dev/null && pwd)"; then
+        FORK_FROM="${_fork_dir}/$(basename "${FORK_FROM}")"
+    fi
+fi
+read -r -a KEEP_ITER_LIST <<< "${KEEP_ITERS:-}"
+for _n in "${KEEP_ITER_LIST[@]}"; do
+    [[ "${_n}" =~ ^[1-9][0-9]*$ ]] || { echo "ERROR: KEEP_ITERS entry '${_n}' must be a positive integer." >&2; exit 1; }
+done
+
+# Deep AutoAugment searching in the run is not the published-policy run of the same arm.
+_search=""
+[ "${HOST}" = "deep_autoaugment" ] && [ "${DEEPAA_POLICY:-}" = "search" ] && _search="deepaa-search"
+
+EXP_NAME="${EXP_NAME:-${HOST}_${_arm}_${DATASET}_${BACKBONE}_s${SEED}${_prune:+_prune-${_prune}}${_fork:+_${_fork}}${_search:+_${_search}}${RUN_TAG:+_${RUN_TAG}}}"
 
 WORK_DIR="${WORK_DIR:-./experiments}"
 CLUSTER="${CLUSTER:-nexus}"
@@ -214,6 +288,11 @@ if [ -z "${ALLOW_RESUME:-}" ] && [ -f "${EXP_DIR}/last_checkpoint" ]; then
     echo "ERROR: ${EXP_DIR} already holds a checkpoint; training would resume it." >&2
     echo "       Set RUN_TAG=... for a fresh run, or ALLOW_RESUME=1 to continue it." >&2
     exit 1
+fi
+# A fork reads its source checkpoint until it has saved one of its own
+# (tasks.mmseg.config.build); resuming from that, it needs the source no more (train.py).
+if [ -n "${FORK_FROM:-}" ] && ! { [ -n "${ALLOW_RESUME:-}" ] && [ -f "${EXP_DIR}/last_checkpoint" ]; }; then
+    [ -f "${FORK_FROM}" ] || { echo "ERROR: FORK_FROM=${FORK_FROM} is not a file." >&2; exit 1; }
 fi
 
 activate_env || exit 1
@@ -242,18 +321,40 @@ if [ "${HOST}" = "sensaug" ]; then
     [ "${INV_AUG:-0}" = "0" ] && TRAIN_FLAGS+=(--no-inv-aug)
 fi
 if [ "${HOST}" = "faster_autoaugment" ]; then
-    FAA_POLICY="${FAA_POLICY:-${WORK_DIR}/faa_search_${DATASET}/final.npz}"
-    [ -f "${FAA_POLICY}" ] || {
-        echo "ERROR: no Faster AutoAugment policy at ${FAA_POLICY}. Search one first" >&2
-        echo "       (bash slurm/submit.sh <name> slurm/faa_search.sbatch ${DATASET}), or set FAA_POLICY." >&2
-        exit 1; }
-    extra+=("host.policy_file=$(cd "$(dirname "${FAA_POLICY}")" && pwd)/$(basename "${FAA_POLICY}")")
+    if [ "${FAA_POLICY:-}" = "initial" ]; then
+        extra+=("host.policy_file=initial")
+    else
+        FAA_POLICY="${FAA_POLICY:-${WORK_DIR}/faa_search_${DATASET}/final.npz}"
+        [ -f "${FAA_POLICY}" ] || {
+            echo "ERROR: no Faster AutoAugment policy at ${FAA_POLICY}. Search one first" >&2
+            echo "       (bash slurm/submit.sh <name> slurm/faa_search.sbatch ${DATASET}), or set FAA_POLICY" >&2
+            echo "       (FAA_POLICY=initial for the starting policy)." >&2
+            exit 1; }
+        extra+=("host.policy_file=$(cd "$(dirname "${FAA_POLICY}")" && pwd)/$(basename "${FAA_POLICY}")")
+    fi
+fi
+[ -n "${NMS_NULL:-}" ] && extra+=("selector.null_arm=${NMS_NULL}" "selector.null_seed=${NMS_NULL_SEED}")
+if [ "${HOST}" = "deep_autoaugment" ]; then
+    if [ "${DEEPAA_POLICY:-}" = "search" ]; then
+        extra+=("host.policy_file=search")
+    else
+        DEEPAA_POLICY="${DEEPAA_POLICY:-${REPO_DIR}/third_party/DeepAA/policy_port/policy_DeepAA_imagenet_1.npz}"
+        [ -f "${DEEPAA_POLICY}" ] || {
+            echo "ERROR: no Deep AutoAugment policy at ${DEEPAA_POLICY}. Check out the DeepAA submodule" >&2
+            echo "       (git submodule update --init third_party/DeepAA), or set DEEPAA_POLICY" >&2
+            echo "       (DEEPAA_POLICY=search to search in the run)." >&2
+            exit 1; }
+        extra+=("host.policy_file=$(cd "$(dirname "${DEEPAA_POLICY}")" && pwd)/$(basename "${DEEPAA_POLICY}")")
+    fi
 fi
 [ "${#PRUNE_OP_LIST[@]}" -gt 0 ] && TRAIN_FLAGS+=(--pruned-augmentations "${PRUNE_OP_LIST[@]}")
 [ "${PRUNE_RANDOM}" != "0" ] && TRAIN_FLAGS+=(--random-prune-count "${PRUNE_RANDOM}")
 [ -n "${PRUNE_SEED:-}" ] && TRAIN_FLAGS+=(--random-prune-seed "${PRUNE_SEED}")
+[ -n "${PRUNE_POOL:-}" ] && TRAIN_FLAGS+=(--random-prune-pool "${PRUNE_POOL}")
 [ "${HOLD_NONE_PROB:-1}" = "0" ] && TRAIN_FLAGS+=(--no-hold-none-prob)
 [ "${PROBE_PRUNED:-0}" != "0" ] && TRAIN_FLAGS+=(--probe-pruned)
+[ -n "${FORK_FROM:-}" ] && TRAIN_FLAGS+=(--fork-from "${FORK_FROM}")
+[ "${#KEEP_ITER_LIST[@]}" -gt 0 ] && TRAIN_FLAGS+=(--keep-checkpoints "${KEEP_ITER_LIST[@]}")
 # Continue only a run that has something to continue; ALLOW_RESUME on a fresh
 # directory is just a fresh start.
 if [ -n "${ALLOW_RESUME:-}" ] && [ -f "${EXP_DIR}/last_checkpoint" ]; then
@@ -264,7 +365,9 @@ fi
 # would fail on every rank, after the ranks had already spun up. This writes
 # ${EXP_DIR}/dropaug.yaml; the launch below composes the same one.
 echo "=== preflight: ${TRAIN_PY} --dry-run ==="
-python "${TRAIN_PY}" "${TRAIN_FLAGS[@]}" --dry-run "${extra[@]}" || {
+# `--` ends the flags: a list flag (--pruned-augmentations, --keep-checkpoints) would
+# otherwise take the Hydra overrides after it as more of its values.
+python "${TRAIN_PY}" "${TRAIN_FLAGS[@]}" --dry-run -- "${extra[@]}" || {
     echo "ERROR: ${TRAIN_PY} --dry-run rejected the config (exit $?); not launching." >&2; exit 1; }
 
 # Nexus compute nodes have internet access, so pretrained backbones need no staging.
@@ -285,12 +388,12 @@ TORCHRUN_ARGS=(
 export OMP_NUM_THREADS=16
 
 echo "=== train: host=${HOST} dataset=${DATASET} selector=${SELECTOR} lam=${LAM}" \
-     "seed=${SEED} backbone=${BACKBONE}${_prune:+ prune=${_prune}} gpus=${NUM_GPUS} -> ${EXP_DIR} ==="
+     "seed=${SEED} backbone=${BACKBONE}${_prune:+ prune=${_prune}}${_fork:+ ${_fork}} gpus=${NUM_GPUS} -> ${EXP_DIR} ==="
 
 torchrun "${TORCHRUN_ARGS[@]}" \
     "${TRAIN_PY}" \
     "${TRAIN_FLAGS[@]}" \
-    "${extra[@]}"
+    -- "${extra[@]}"
 
 TRAIN_STATUS=$?
 if [ "${TRAIN_STATUS}" -ne 0 ]; then

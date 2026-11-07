@@ -52,13 +52,33 @@ And one draws whole stages of ``(op, magnitude)`` from a searched policy
   units, or nothing (``host.draw_stages``), applied stage by stage; geometric ops move the
   label. SamplePairing blends in an image of the batch (``couples_images``), so
   ``apply_draws`` runs it over the whole batch (below)
+- ``deep_autoaugment``: Deep AutoAugment's published policy (hosts/deep_autoaugment.py).
+  Per image, each of its K layers draws one op at its magnitude, or nothing, applied
+  layer by layer; geometric ops move the label
+- ``adversarial_autoaugment``: Adversarial AutoAugment's (hosts/adversarial_autoaugment.py).
+  Its policies come from an LSTM controller trained alongside the model, installed once an
+  epoch by its training loop (``host.set_policies``); per image, a sub-policy of its copy's
+  policy and its two ops, each at its bin's magnitude
+
+A host with ``num_copies`` M > 1 is trained on M copies of each image (Adversarial
+AutoAugment's batch augmentation, and Deep AutoAugment's BatchAug): the mmseg
+preprocessor repeats the batch M times, copy-major, before ``augment_batch``, so the
+host's ``draw_stages`` sees B * M images, image i being copy i // B.
 
 ``augment_batch`` applies whichever of the others a host has. ``check_trainable`` refuses
 every other host: the torchvision methods (randaugment, trivialaugment, autoaugment),
 whose ops are 8-bit torchvision calls, train through their ``*_diff`` hosts.
+
+**The prune guard.** ``augment_batch`` (and the preprocessor, for a ``POLICY_HOSTS``
+host's slots) passes ``forbidden_ops(host)`` to ``apply_draws``: the host's static prune
+and every op its q gives 0 (an online prune's latched M among them). A drawn op in that
+set raises ``PrunedOpDrawn`` instead of being trained on. Every host keeps it by
+construction (checked on every training host, static and online, 2026-11-04); the
+guard is there so a regression can't silently bring a pruned op back, which Sensaug once
+did.
 """
 
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, FrozenSet, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
@@ -69,6 +89,7 @@ __all__ = [
     "MIX_HOSTS",
     "NO_OP",
     "POLICY_HOSTS",
+    "PrunedOpDrawn",
     "SLOT_HOSTS",
     "STAGE_HOSTS",
     "TRAINABLE_HOSTS",
@@ -76,6 +97,7 @@ __all__ = [
     "apply_slots",
     "augment_batch",
     "check_trainable",
+    "forbidden_ops",
     "sample_draws",
     "slots",
     "stages",
@@ -102,11 +124,36 @@ POLICY_HOSTS = ("madaug",)
 
 #: The hosts that draw a batch's stages of ``(op, magnitude)`` from a searched policy
 #: (``draw_stages``), the magnitude in the op's units.
-STAGE_HOSTS = ("faster_autoaugment",)
+STAGE_HOSTS = ("faster_autoaugment", "deep_autoaugment", "adversarial_autoaugment")
 
 #: Sensaug's level jitter on a pdf draw, so the pdf's discrete levels are not the
 #: only magnitudes ever trained on.
 LEVEL_JITTER = 0.1
+
+
+class PrunedOpDrawn(RuntimeError):
+    """A training draw named an op its host prunes (module docstring, the prune guard)."""
+
+
+def forbidden_ops(host) -> FrozenSet[str]:
+    """The ops ``host`` must not apply now: its static prune (``pruned()``, implied ops
+    included) and every op ``sampling_probs()`` gives exactly 0, which is what an online
+    prune's q (PruneHook's M) and a hard selector's zeros come to. ``sampling_probs`` is
+    what the host realizes, so a correct host never draws an op it gives 0."""
+    probs = np.asarray(host.sampling_probs(), dtype=np.float64)
+    zero = {name for name, p in zip(host.vocabulary(), probs) if p == 0.0}
+    return frozenset(host.pruned()) | frozenset(zero)
+
+
+def _check_draws(names: Iterable[str], forbidden: Optional[FrozenSet[str]]) -> None:
+    if not forbidden:
+        return
+    hit = sorted({name for name in names if name in forbidden})
+    if hit:
+        raise PrunedOpDrawn(
+            f"a training draw applies {hit}, which the host prunes or gives probability 0; "
+            f"refusing to train on it (the host's draw and its sampling_probs disagree)"
+        )
 
 
 def sample_draws(host, batch_size: int, rng=np.random) -> List[Tuple[str, float]]:
@@ -190,7 +237,13 @@ def _bin_magnitude(host, name: str, index, flip) -> float:
     return magnitude
 
 
-def apply_draws(rgb01, labels: Optional[torch.Tensor], draws: Sequence[Tuple[str, float]], ops: Dict):
+def apply_draws(
+    rgb01,
+    labels: Optional[torch.Tensor],
+    draws: Sequence[Tuple[str, float]],
+    ops: Dict,
+    forbidden: Optional[FrozenSet[str]] = None,
+):
     """Apply each drawn op to the sub-batch that drew it; ``labels`` move with the
     geometric ones (the vocab op warps them). Grouped rather than looped per image,
     so the ops still run batched. Sensaug's ``_apply_ops``.
@@ -198,7 +251,8 @@ def apply_draws(rgb01, labels: Optional[torch.Tensor], draws: Sequence[Tuple[str
     An op that ``couples_images`` (SamplePairing) runs over the whole batch as it came
     in, every other image at the op's identity, so an image's partner can be any image
     of the batch, not only one that drew the same op; only the images that drew it keep
-    the result."""
+    the result. A drawn op in ``forbidden`` (``forbidden_ops``) raises ``PrunedOpDrawn``."""
+    _check_draws((name for name, _ in draws), forbidden)
     groups: Dict[str, List[Tuple[int, float]]] = {}
     for i, (name, level) in enumerate(draws):
         if name != NO_OP:
@@ -232,19 +286,20 @@ def augment_batch(host, rgb01, labels: Optional[torch.Tensor], ops: Dict, rng=np
             f"host {host.name!r} draws from a policy on the model's features; its training "
             f"loop computes the draws, applied with apply_slots"
         )
+    forbidden = forbidden_ops(host)
     if host.name in MIX_HOSTS:
-        return augmix(host, rgb01, ops, rng), labels
+        return augmix(host, rgb01, ops, rng, forbidden), labels
     if host.name in SLOT_HOSTS:
-        return slots(host, rgb01, labels, ops, rng)
+        return slots(host, rgb01, labels, ops, rng, forbidden)
     if host.name in STAGE_HOSTS:
-        return stages(host, rgb01, labels, ops, rng)
+        return stages(host, rgb01, labels, ops, rng, forbidden)
     for _ in range(int(getattr(host, "num_ops", 1))):
         draws = sample_draws(host, int(rgb01.shape[0]), rng)
-        rgb01, labels = apply_draws(rgb01, labels, draws, ops)
+        rgb01, labels = apply_draws(rgb01, labels, draws, ops, forbidden)
     return rgb01, labels
 
 
-def augmix(host, rgb01, ops: Dict, rng=np.random):
+def augmix(host, rgb01, ops: Dict, rng=np.random, forbidden: Optional[FrozenSet[str]] = None):
     """AugMix as torchvision's ``AugMix.forward`` computes it, per image: ``m0 * x +
     sum_i w_i * chain_i(x)``, with the depths and weights from ``host.draw_mix`` and every
     step of every chain one ``sample_draws`` draw (an image whose chain is shorter gets
@@ -263,12 +318,12 @@ def augmix(host, rgb01, ops: Dict, rng=np.random):
         for step in range(int(depths[:, i].max())):
             draws = sample_draws(host, batch_size, rng)
             draws = [draw if step < depths[b, i] else (NO_OP, 0.0) for b, draw in enumerate(draws)]
-            chain, _ = apply_draws(chain, None, draws, ops)
+            chain, _ = apply_draws(chain, None, draws, ops, forbidden)
         mix = mix + per_image(chains[:, i]) * chain
     return mix
 
 
-def slots(host, rgb01, labels: Optional[torch.Tensor], ops: Dict, rng=np.random):
+def slots(host, rgb01, labels: Optional[torch.Tensor], ops: Dict, rng=np.random, forbidden: Optional[FrozenSet[str]] = None):
     """A ``SLOT_HOSTS`` host's draw applied to one batch: ``host.draw_slots`` gives each
     image's ops in order with their bins, each slot is read through
     ``vocab.magnitude_bins`` and applied in turn (``apply_draws``), and the label moves
@@ -278,29 +333,35 @@ def slots(host, rgb01, labels: Optional[torch.Tensor], ops: Dict, rng=np.random)
             (str(name), 0.0 if name == NO_OP else _bin_magnitude(host, str(name), index, False))
             for name, index in zip(names, bins)
         ]
-        rgb01, labels = apply_draws(rgb01, labels, draws, ops)
+        rgb01, labels = apply_draws(rgb01, labels, draws, ops, forbidden)
     return rgb01, labels
 
 
-def stages(host, rgb01, labels: Optional[torch.Tensor], ops: Dict, rng=np.random):
+def stages(host, rgb01, labels: Optional[torch.Tensor], ops: Dict, rng=np.random, forbidden: Optional[FrozenSet[str]] = None):
     """A ``STAGE_HOSTS`` host's draw applied to one batch: ``host.draw_stages`` gives
     each stage's op per image with its magnitude in the op's units, applied in turn
     (``apply_draws``), the label moving with the geometric ops. An image a stage leaves
     alone is ``NO_OP`` there."""
     for names, magnitudes in host.draw_stages(int(rgb01.shape[0]), _generator(rng)):
         draws = [(str(name), float(m)) for name, m in zip(names, magnitudes)]
-        rgb01, labels = apply_draws(rgb01, labels, draws, ops)
+        rgb01, labels = apply_draws(rgb01, labels, draws, ops, forbidden)
     return rgb01, labels
 
 
-def apply_slots(rgb01, labels: Optional[torch.Tensor], slot_draws: Sequence[Sequence[Tuple[str, float]]], ops: Dict):
+def apply_slots(
+    rgb01,
+    labels: Optional[torch.Tensor],
+    slot_draws: Sequence[Sequence[Tuple[str, float]]],
+    ops: Dict,
+    forbidden: Optional[FrozenSet[str]] = None,
+):
     """Slots of per-image ``(op, magnitude)`` draws, the magnitude in the op's units,
     applied in turn (``apply_draws``), the label moving with the geometric ops. A
     ``POLICY_HOSTS`` host's draw (``MADAugHost.draw``)."""
     for draws in slot_draws:
         if len(draws) != int(rgb01.shape[0]):
             raise ValueError(f"a slot holds {len(draws)} draws for a batch of {int(rgb01.shape[0])}")
-        rgb01, labels = apply_draws(rgb01, labels, draws, ops)
+        rgb01, labels = apply_draws(rgb01, labels, draws, ops, forbidden)
     return rgb01, labels
 
 
@@ -318,8 +379,13 @@ def check_trainable(host, ops) -> None:
         if not getattr(host, "searched", True):
             raise NotImplementedError(
                 f"host {host.name!r} has no searched policy (host.policy_file is null), only "
-                f"the search's starting point; run scripts/faa_search.py and set "
-                f"host.policy_file to its final.npz"
+                f"the search's starting point; set host.policy_file to a policy ("
+                + (
+                    "scripts/faa_search.py's final.npz, or 'initial' to train on the starting point"
+                    if host.name == "faster_autoaugment"
+                    else "a published one, third_party/DeepAA/policy_port/"
+                )
+                + ")"
             )
         foreign = [name for name in ops if name not in host.vocabulary()]
         if not foreign:
@@ -351,6 +417,7 @@ def check_trainable(host, ops) -> None:
         + (f" with ops {foreign[:3]}..." if foreign else "")
         + ". The torchvision methods train through their differentiable hosts "
         "(trivialaugment_diff, randaugment_diff, autoaugment_diff, augmix_diff); SmartSamplingAugment through "
-        "smartsampling_diff; MADAug through madaug; Faster AutoAugment through faster_autoaugment. augment=False probes them on a clean-trained "
-        "model."
+        "smartsampling_diff; MADAug through madaug; Faster AutoAugment through faster_autoaugment; Deep AutoAugment "
+        "through deep_autoaugment; Adversarial AutoAugment through adversarial_autoaugment. augment=False probes "
+        "them on a clean-trained model."
     )

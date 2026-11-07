@@ -34,7 +34,8 @@ from tasks.augment import augment_batch, check_trainable  # noqa: E402
 from vocab import build_vocab  # noqa: E402
 
 CLASSES = 5
-FADED = ("HorizontalFlip", "Solarize", "Posterize", "Invert", "AutoContrast", "Equalize", "Cutout")
+# configs/host/faster_autoaugment.yaml's fade; HorizontalFlip and SamplePairing are unprobed.
+FADED = ("Solarize", "Posterize", "Invert", "AutoContrast", "Equalize", "Cutout")
 
 
 def check(cond, msg):
@@ -155,7 +156,8 @@ def main():
     rows = collect_grads(Adapter(dense), batch, ops, magnitudes, methods=methods, check=True)
     bad = [n for n, r in rows.items() if methods[n] != "unprobed" and not np.isfinite(r).all()]
     check(not bad, f"non-finite G rows: {bad}")
-    check(np.isnan(rows["faster_aa.SamplePairing"]).all(), "SamplePairing must be unprobed")
+    for name in ("faster_aa.SamplePairing", "faster_aa.HorizontalFlip"):
+        check(np.isnan(rows[name]).all(), f"{name} must be unprobed")
     count = {}
     for m in methods.values():
         count[m] = count.get(m, 0) + 1

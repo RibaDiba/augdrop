@@ -41,6 +41,19 @@ with the cls loop):
 - a ``faster_autoaugment`` host (``STAGE_HOSTS``): Faster AutoAugment's searched policy over
   ``faster_aa``, a sub-policy per image and its stages applied in turn
   (``host.draw_stages``); the policy file comes from scripts/faa_search.py
+- a ``deep_autoaugment`` host (``STAGE_HOSTS``): Deep AutoAugment's published policy over
+  ``deepaa``, one draw per layer per image, applied layer by layer (``host.draw_stages``)
+- an ``adversarial_autoaugment`` host (``STAGE_HOSTS``): Adversarial AutoAugment's policies
+  over ``advaa``, installed once an epoch by ``AdvAAControllerHook`` (``advaa_hooks.py``),
+  a sub-policy of its copy's policy per image (``host.draw_stages``)
+
+**Batch augmentation.** A host with ``num_copies`` M > 1 (Adversarial AutoAugment's M
+policies; Deep AutoAugment's BatchAug) trains on M copies of each image: on the training
+path the batch is repeated M times, copy-major (image i is copy i // B of image i % B),
+and its data samples deep-copied, before the host augments it, so the segmentor sees
+B * M images. The learning rate is unchanged (the loss is the mean over B * M, which is
+Adversarial AutoAugment's Eq. 4). The augmented data samples are kept as
+``last_train_samples`` for the hook that scores each copy's loss.
 
 The torchvision methods (RandAugment, TrivialAugment, AutoAugment) are refused
 (``check_trainable``): they train through those ``*_diff`` hosts.
@@ -58,6 +71,7 @@ every draw, the warmup policy's included.
 """
 
 import contextlib
+import copy
 from typing import Optional, Tuple
 
 import torch
@@ -68,7 +82,16 @@ from mmseg.registry import MODELS, TRANSFORMS
 from hosts import build_host
 from vocab import get_op
 
-from ..augment import NO_OP, POLICY_HOSTS, apply_draws, apply_slots, augment_batch, check_trainable, sample_draws
+from ..augment import (
+    NO_OP,
+    POLICY_HOSTS,
+    apply_draws,
+    apply_slots,
+    augment_batch,
+    check_trainable,
+    forbidden_ops,
+    sample_draws,
+)
 
 __all__ = ["GpuAugSegDataPreProcessor", "NO_OP", "apply_draws", "augment_batch", "sample_draws"]
 
@@ -112,6 +135,8 @@ class GpuAugSegDataPreProcessor(SegDataPreProcessor):
         self._suspended = False
         self._eval_spec: Optional[Tuple[str, float]] = None
         self._policy_slots = None
+        #: The last training batch's data samples, augmented labels set (module docstring).
+        self.last_train_samples: Optional[list] = None
 
     @contextlib.contextmanager
     def suspended(self):
@@ -163,6 +188,12 @@ class GpuAugSegDataPreProcessor(SegDataPreProcessor):
             draws = [self._eval_spec] * int(inputs.shape[0])
 
         samples = data.get("data_samples") or []
+        copies = int(getattr(self.host, "num_copies", 1)) if training else 1
+        if copies > 1:
+            # Batch augmentation: M copies of each image, copy-major (module docstring).
+            inputs = inputs.repeat(copies, 1, 1, 1)
+            samples = [copy.deepcopy(sample) for _ in range(copies) for sample in samples]
+            data["data_samples"] = samples
 
         mean = self.mean.view(1, -1, 1, 1)
         std = self.std.view(1, -1, 1, 1)
@@ -174,7 +205,7 @@ class GpuAugSegDataPreProcessor(SegDataPreProcessor):
             if draws is None:
                 rgb01, labels = augment_batch(self.host, rgb01, labels, self.ops)
             elif training:
-                rgb01, labels = apply_slots(rgb01, labels, draws, self.ops)
+                rgb01, labels = apply_slots(rgb01, labels, draws, self.ops, forbidden_ops(self.host))
             else:
                 rgb01, labels = apply_draws(rgb01, labels, draws, self.ops)
             data["inputs"] = (rgb01 * 255.0 - mean) / std
@@ -182,6 +213,8 @@ class GpuAugSegDataPreProcessor(SegDataPreProcessor):
         if labels is not None:
             for sample, label in zip(samples, labels):
                 sample.gt_sem_seg.data = label
+        if training:
+            self.last_train_samples = samples
         return data
 
 

@@ -1,0 +1,7 @@
+# Adversarial AutoAugment's 16 ops at AutoAugment's Table 6 ranges
+# (vocab/families/advaa.py), PIL's implementations, the 9 signed ops split into
+# _pos/_neg (25 ops). Solarize, Posterize and Cutout step with the magnitude;
+# AutoContrast, Invert and Equalize have none; SamplePairing blends in an image of the
+# batch.
+families: [advaa]
+exclude: []

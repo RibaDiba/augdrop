@@ -28,6 +28,13 @@ can still be suppressed at a later one. ``prune_weights`` re-applies M to a new 
 which is what an SA round does with each fresh pdf.
 
 There is no ``budget``. How many ops go is whatever R says, possibly none.
+
+**The matched null** (``null_arm="random"``, ``random_null``): at each probe, NMS runs as
+above, and then as many ops as it newly pruned are drawn at random from the ops it ranked
+(a positive prior, a usable row in R, a loss increase, not yet pruned) and pruned instead.
+That is the random-K arm of an online prune: the same schedule, the same count at each
+probe, the same pool (unprobed and exempt ops are never drawn), only which ops go is
+random. Each probe's draw is seeded by ``(null_seed, iteration)``.
 """
 
 from __future__ import annotations
@@ -40,10 +47,13 @@ import numpy as np
 
 from .base import Redundancy, Selection, Selector, as_relevance, declined, pairwise
 
-__all__ = ["NMS", "NmsResult", "TAU", "prune_weights"]
+__all__ = ["NMS", "NULLS", "NmsResult", "TAU", "nms_analysis", "nms_select", "prune_weights", "random_null"]
 
 #: Cohen's (1988) "large" correlation: r^2 = 1/4.
 TAU = 0.5
+
+#: The nulls an NMS arm can run as (``NMS(null_arm=...)``, ``random_null``).
+NULLS = ("random",)
 
 
 class NmsResult(NamedTuple):
@@ -92,16 +102,19 @@ class NmsResult(NamedTuple):
 class NMS(Selector):
     """Greedy NMS over the ops with a positive prior.
 
-    tau  an op is suppressed when its R with a kept op is above this
-    lam  a suppressed op's weight is ``1 - lam``. It must be 1: this arm prunes. It is
-         a parameter only so the run name and the launcher's ``--lam`` mean the same
-         thing for every selector.
+    tau        an op is suppressed when its R with a kept op is above this
+    lam        a suppressed op's weight is ``1 - lam``. It must be 1: this arm prunes. It
+               is a parameter only so the run name and the launcher's ``--lam`` mean the
+               same thing for every selector.
+    null_arm   None, or ``"random"``: the matched null (module docstring), which
+               PruneHook applies through ``random_null``
+    null_seed  the null's seed
     """
 
     name = "nms"
     hard = True
 
-    def __init__(self, *, tau: float = TAU, lam: float = 1.0):
+    def __init__(self, *, tau: float = TAU, lam: float = 1.0, null_arm: Optional[str] = None, null_seed: int = 0):
         tau = float(tau)
         if not (math.isfinite(tau) and -1.0 < tau <= 1.0):
             raise ValueError(f"tau is a correlation cutoff in (-1, 1], got {tau}")
@@ -109,8 +122,14 @@ class NMS(Selector):
             raise ValueError(
                 f"nms prunes: a suppressed op's weight is 1 - lam, so lam must be 1, got {lam}"
             )
+        if null_arm is not None and null_arm not in NULLS:
+            raise ValueError(f"nms null_arm {null_arm!r} is not one of {NULLS} (or None)")
+        if int(null_seed) < 0:
+            raise ValueError(f"null_seed must be >= 0, got {null_seed}")
         self.tau = tau
         self.lam = 1.0
+        self.null = null_arm
+        self.null_seed = int(null_seed)
 
     def select(
         self,
@@ -221,3 +240,57 @@ def prune_weights(rel: Mapping, pruned: Sequence[str]) -> Selection:
         )
     kept = tuple(n for n, v in zip(names, q) if v > 0)
     return Selection(names, q / q.sum(), True, None, kept=kept, pruned=hit)
+
+
+def random_null(result: NmsResult, rel: Mapping, *, seed: int, key: int) -> Tuple[Selection, NmsResult, Tuple[str, ...]]:
+    """The matched null of one NMS pass (module docstring): ``len(result.new)`` ops drawn
+    from ``result.order`` (the ops NMS ranked: a positive prior, a usable row, a score,
+    not yet pruned) with ``hosts.prune.draw_random_prune``, seeded by ``(seed, key)``
+    (``key`` the probe's iteration, so each probe draws afresh). Returns ``(Selection,
+    NmsResult, drawn)``: the result's ``pruned`` is ``pruned_before`` plus the draw and
+    its ``suppressed`` is empty (no op suppressed another); ``result`` itself is NMS's
+    own pass, for the log."""
+    from hosts.prune import draw_random_prune
+
+    count = len(result.new)
+    draw_seed = int(np.random.SeedSequence([int(seed), int(key)]).generate_state(1)[0])
+    drawn = draw_random_prune(result.order, count, draw_seed) if count else ()
+    pruned = result.pruned_before + tuple(drawn)
+    kept = tuple(n for n in result.order if n not in drawn) + result.exempt
+    null = result._replace(kept=kept, suppressed={}, pruned=pruned)
+    names, prior = as_relevance(rel)
+    if not pruned:
+        return declined(names, prior, "NMS pruned nothing, so the null draws nothing"), null, drawn
+    selection = prune_weights(rel, pruned)
+    if selection.applied:
+        selection = selection._replace(kept=null.kept, exempt=null.exempt)
+    return selection, null, drawn
+
+
+def nms_analysis(sweep, static_pruned: Sequence[str] = ()):
+    """The R this arm reads, from one sweep: ``stats.analyze_sweep`` with
+    ``residual_rank=True`` and no bootstrap or n_min. ``static_pruned`` (the run's static
+    prune) is set aside even when the probe measured it. PruneHook and
+    ``scripts/nms_prune.py`` both take it from here, so the online and post-hoc prunes are
+    the same computation."""
+    import stats
+
+    return stats.analyze_sweep(sweep, static_pruned=tuple(static_pruned), residual_rank=True, bootstrap=False, n_min=0)
+
+
+def nms_select(
+    analysis,
+    rel: Mapping,
+    *,
+    tau: float = TAU,
+    pruned: Sequence[str] = (),
+    mask_within_op: bool = True,
+) -> Tuple[Selection, NmsResult]:
+    """``NMS(tau).run`` on ``nms_analysis``'s result: its primary R (R_residual), ranked
+    by its loss increase. ``rel`` is the host's prior and ``pruned`` M so far."""
+    return NMS(tau=tau).run(
+        Redundancy(analysis.names, analysis.primary, mask_within_op=mask_within_op),
+        rel,
+        score=dict(zip(analysis.names, analysis.loss_increase)),
+        pruned=pruned,
+    )
