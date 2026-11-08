@@ -43,6 +43,9 @@ One more trains on its method's own ops in their own units, drawn by a policy ne
   each image's feature), so the training loop computes them (``madaug.exploit``) and the
   preprocessor applies them as given, ``k_ops`` slots of ``(op, magnitude)`` per image
   (``apply_slots``); geometric ops move the label
+- ``adaaug``: AdaAug's (hosts/adaaug.py), the same way: its policy reads each image's
+  feature (the live model's in the search-then-train trunk, a frozen search model's after
+  the search), so ``AdaAugPolicyHook`` computes the draws and the preprocessor applies them
 
 And one draws whole stages of ``(op, magnitude)`` from a searched policy
 (``STAGE_HOSTS``):
@@ -59,6 +62,10 @@ And one draws whole stages of ``(op, magnitude)`` from a searched policy
   Its policies come from an LSTM controller trained alongside the model, installed once an
   epoch by its training loop (``host.set_policies``); per image, a sub-policy of its copy's
   policy and its two ops, each at its bin's magnitude
+- ``greedy_autoaugment``: Greedy AutoAugment's searched chains (hosts/greedy_autoaugment.py).
+  Per image, the image as it is (0.75) or one ranked chain, every step applied at its
+  level's magnitude, step by step; geometric ops move the label. A search candidate's
+  host (``chain``) gives every image the whole chain
 
 A host with ``num_copies`` M > 1 is trained on M copies of each image (Adversarial
 AutoAugment's batch augmentation, and Deep AutoAugment's BatchAug): the mmseg
@@ -120,11 +127,11 @@ SLOT_HOSTS = ("smartsampling_diff", "autoaugment_diff")
 
 #: The hosts whose draws come from a policy network on the model's features, computed by
 #: the training loop and applied with ``apply_slots``.
-POLICY_HOSTS = ("madaug",)
+POLICY_HOSTS = ("madaug", "adaaug")
 
 #: The hosts that draw a batch's stages of ``(op, magnitude)`` from a searched policy
 #: (``draw_stages``), the magnitude in the op's units.
-STAGE_HOSTS = ("faster_autoaugment", "deep_autoaugment", "adversarial_autoaugment")
+STAGE_HOSTS = ("faster_autoaugment", "deep_autoaugment", "adversarial_autoaugment", "greedy_autoaugment")
 
 #: Sensaug's level jitter on a pdf draw, so the pdf's discrete levels are not the
 #: only magnitudes ever trained on.
@@ -383,6 +390,8 @@ def check_trainable(host, ops) -> None:
                 + (
                     "scripts/faa_search.py's final.npz, or 'initial' to train on the starting point"
                     if host.name == "faster_autoaugment"
+                    else "scripts/gaa_search.py's final.json, or 'initial' to train with no policy"
+                    if host.name == "greedy_autoaugment"
                     else "a published one, third_party/DeepAA/policy_port/"
                 )
                 + ")"

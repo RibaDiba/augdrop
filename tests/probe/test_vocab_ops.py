@@ -32,10 +32,12 @@ EXPECTED_METHOD = {
     "faster_aa": AUTOGRAD,
     "deepaa": AUTOGRAD,
     "advaa": AUTOGRAD,
+    "greedy_aa": AUTOGRAD,
+    "adaaug": AUTOGRAD,
 }
 # The split families: each keeps four torchvision ops as they are.
 DIFF_FAMILIES = {"trivialaug_diff", "randaug_diff", "augmix_diff", "smartaug_diff"}
-MAGNITUDE_FREE = {"Identity", "AutoContrast", "Equalize", "Invert", "Flip", "HorizontalFlip"}
+MAGNITUDE_FREE = {"Identity", "AutoContrast", "Equalize", "Invert", "Flip", "HorizontalFlip", "FlipLR", "FlipUD", "Blur", "Smooth"}
 # torchvision's enhance ops carry an exact tangent.
 ENHANCE = {"Brightness", "Color", "Contrast", "Sharpness"}
 # The split families keep these as torchvision's own ops: no tangent, finite differences.
@@ -46,7 +48,7 @@ FASTER_AA_STEPPED = {"Posterize", "Solarize", "Cutout"}
 # deepaa / advaa: PIL's ops with the signed ones split; Solarize and Posterize are
 # torchvision's (no tangent), and advaa's Cutout steps with its side. deepaa's Cutout and
 # RandomResizedCrop have no magnitude (stochastic).
-PIL_FAMILIES = {"deepaa", "advaa"}
+PIL_FAMILIES = {"deepaa", "advaa", "greedy_aa", "adaaug"}
 PIL_STEPPED = {"Posterize", "Solarize", "Cutout"}
 
 

@@ -615,7 +615,13 @@ def check(cfg: DictConfig, *, training: bool) -> List[str]:
             except NotImplementedError as error:
                 errors.append(f"{error} (set augment=false to train clean and probe anyway)")
             policy = policy_of(cfg)
-            if policy is not None:
+            if policy is not None and name == "adaaug":
+                if backend != "mmseg":
+                    errors.append(
+                        f"host {name!r} applies its policy with AdaAugPolicyHook, which is mmseg's; "
+                        f"task {choices.get('task')!r} is {backend} (set augment=false to probe only)"
+                    )
+            elif policy is not None:
                 import madaug
 
                 if backend != "mmseg":

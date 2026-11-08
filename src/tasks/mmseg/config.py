@@ -372,10 +372,11 @@ def build(cfg, work_dir: str, *, launcher: str = "none", resume: bool = False):
 
     # A host whose policy follows training progress is told the step before each one.
     progress = [dict(type="HostProgressHook")] if hasattr(HOSTS[host_name], "set_step") else []
-    # A host whose draws come from a policy network trains it before each step.
+    # A host whose draws come from a policy network trains it before each step (MADAug),
+    # or applies it (AdaAug: the search's starting policy, or the searched one, frozen).
     policy = policy_of(cfg)
     if policy is not None and cfg.augment:
-        progress.append(dict(type="MADAugPolicyHook", **policy))
+        progress.append(dict(type="AdaAugPolicyHook" if host_name == "adaaug" else "MADAugPolicyHook", **policy))
     # A host whose policies come from an adversarial controller trains it every epoch.
     controller = controller_of(cfg)
     if controller is not None and cfg.augment:
