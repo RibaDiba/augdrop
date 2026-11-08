@@ -1,5 +1,33 @@
 # Changelog
 
+## 2026-11-07: Greedy AutoAugment
+
+Goal: Greedy AutoAugment (Naghizadeh et al., 2020) as one more search-then-train host, on
+the user's loop: train normally, prune, search what is left, train on the searched policy.
+
+### Changes
+
+- **Vocab `greedy_aa`** (29 ops): the TF AutoAugment CIFAR code's 20 ops, which the released
+  code applies, at its ranges (32 px ones as fractions of the image), on `deepaa`'s
+  differentiable bodies, the signed geometric and enhance ops split. New: FlipUD,
+  CropBilinear (autograd), Cutout (the TF geometry), Blur and Smooth (PIL's kernels).
+- **The audit's class scene** meets a third of the way in, not at the centre, so a centred
+  zoom (CropBilinear) moves its label; every other op's checks are unchanged.
+- **Host `greedy_autoaugment`**: the top 25 chains in 5 ranked sets, drawn per image by the
+  code's scan (0.75 untouched); q and the prune per chain, the original-data share held;
+  `policy_file: initial` for the trunk (no policy), `chain` for a search child. A stage host.
+- **The search**: `src/greedyaa/` (Algorithm 1, resumable), `tasks/mmseg/greedyaa_trial.py`
+  (one child: the run's task and recipe, half resolution, 1000 train / 500 score images of
+  the train split, 5 epochs), `scripts/gaa_search.py` (four children at a time, one per
+  GPU; `level_<c>.json`, `final.json`; `--dry-run`, `--time-trial`),
+  `slurm/gaa_search.sbatch` (4 GPUs, gated, resumes on resubmit). The released search's
+  bugs (one SGD step an "epoch", one network for every candidate) are fixed, not ported.
+- **`train.sbatch`**: `GAA_POLICY` (`initial` for the trunk).
+- **Docs**: CLAUDE.md (vocab, host, tasks and slurm rows; a Greedy AutoAugment section; its
+  recipe in probe-and-prune), FACTS D13.
+- **Tests** (existing ones only): the op count, the host factory, the probe's expected
+  methods. Nothing run with mmseg or on a GPU.
+
 ## 2026-11-07: Review fixes (CodeRabbit)
 
 Goal: the still-valid findings of the PR review, each checked against the code first.
