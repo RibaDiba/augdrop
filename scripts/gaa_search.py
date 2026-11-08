@@ -182,12 +182,14 @@ _RESUME_KEYS = ("levels", "epochs", "train_size", "score_size", "resolution", "b
 
 
 def _write_json(path: str, record) -> None:
+    """Write ``record`` as JSON to ``path`` atomically."""
     from stats import write_json_atomic
 
     write_json_atomic(path, record)
 
 
 def _read_records(path: str) -> list:
+    """The scored-trial records in the JSONL file ``path`` (empty if it does not exist)."""
     if not os.path.isfile(path):
         return []
     with open(path) as f:
@@ -195,6 +197,7 @@ def _read_records(path: str) -> list:
 
 
 def _visible_gpus(count: int) -> list:
+    """The first ``count`` visible GPU ids (``CUDA_VISIBLE_DEVICES``, else 0..count-1); dies if fewer."""
     visible = [g for g in os.environ.get("CUDA_VISIBLE_DEVICES", "").split(",") if g.strip()]
     gpus = visible or [str(i) for i in range(count)]
     if len(gpus) < count:
@@ -250,6 +253,7 @@ def run_child(trial_dir: str) -> int:
 
 
 def _launch(trial, out_dir: str, gpu: str, sub: str = "trials"):
+    """Start one child subprocess for ``trial`` on ``gpu``; returns ``(proc, logfile, trial_dir)``."""
     trial_dir = os.path.join(out_dir, sub, trial.key)
     os.makedirs(trial_dir, exist_ok=True)
     _write_json(
@@ -276,6 +280,7 @@ def _launch(trial, out_dir: str, gpu: str, sub: str = "trials"):
 
 
 def _result(trial, trial_dir: str):
+    """The child's ``result.json`` if it exists and is for ``trial``'s chain, else None."""
     path = os.path.join(trial_dir, "result.json")
     if not os.path.isfile(path):
         return None
@@ -476,6 +481,9 @@ def main(argv=None) -> int:
                     search.record(trial, float(result["score"]))
                     records.write(json.dumps(trial.record(result["score"], seconds=result.get("seconds"))) + "\n")
                     pending.remove(trial)
+        if not pending:
+            # Read-back finished the level; the top of the loop writes its policy and re-checks done.
+            continue
         base = search.base(search.level)
         log(
             f"level {search.level}/{levels}: {len(pending)} trials to run"

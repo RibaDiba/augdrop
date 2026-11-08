@@ -281,7 +281,10 @@ class AdaAugHost(AugHost):
         else:
             self._shares = m * self._shares + (1.0 - m) * shares
             self._identity = m * self._identity + (1.0 - m) * identity
-        base = np.where([n in self._pruned for n in self._names], 0.0, self._shares)
+        # An unpruned direction stays drawable (e.g. an enhance op whose level never fell on
+        # one side yet), so floor its share above zero; pruned ones stay at 0.
+        floor = 1e-12
+        base = np.where([n in self._pruned for n in self._names], 0.0, np.maximum(self._shares, floor))
         if base.sum() > 0:
             self._base = base / base.sum()
 
