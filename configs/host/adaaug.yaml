@@ -1,0 +1,68 @@
+# AdaAug (Cheung & Yeung, ICLR 2022) over its 16 ops (vocab adaaug, the 9 signed ones
+# split): a policy network h on a model's feature gives each image p over the ops and
+# Identity and a level for each; k ops are drawn from p. h is searched before training by
+# scripts/adaaug_search.py (slurm/adaaug_search.sbatch), jointly with its own search
+# segmentor gf, then frozen: training reads gf's features. The host is src/hosts/adaaug.py,
+# the search src/adaaug/, the per-step glue tasks/mmseg/adaaug_hooks.py
+# (AdaAugPolicyHook, added by the mmseg builder). mmseg only.
+defaults:
+  - override /vocab@_global_.vocab: adaaug
+
+name: adaaug
+# `initial` is the search's starting policy (an untrained h on the live model's features,
+# drawn at the search's exploit settings: k = 1, delta = 0, T = 1): the trunk of the
+# search-then-train recipe (train.sbatch ADAAUG_POLICY=initial), probed at 25% to decide
+# the op set the search runs over. A search's output directory (holding final/) is the
+# searched policy, h and gf frozen, drawn at the settings below. Absolute, or relative to
+# where the entry point runs (the repo root).
+policy_file: initial
+# The searched policy's draw: AdaAug's train.sh on reduced CIFAR-10 (reduced SVHN: delta
+# 0.4, temperature 2).
+k_ops: 2                    # ops per image, drawn from p without replacement
+delta: 0.3                  # level perturbation (perturb_param)
+temperature: 3.0            # the softmax temperature of the training draw
+prior_momentum: 0.99        # base_probs(): running mean of the drawn shares, the selector's prior
+probe_interval: ${probe.schedule.interval}
+probe_iters: ${probe.schedule.iters}
+control_iters: ${probe.schedule.control_iters}
+# The probe at a fixed magnitude in the recipe (probe.magnitude_mode=fixed): the 18 split
+# ops go through autograd. The ops with no derivative in their magnitude are faded in:
+# Solarize's and Posterize's steps, Cutout's hard edge, and AutoContrast, Invert and
+# Equalize (no magnitude). Flip is out of probing and pruning: faded, its image is a ghost
+# of two frames that no one label matches; it gets an unprobed NaN row, which R sets aside
+# and no selector prunes.
+fade:
+  ops:
+    - adaaug.Solarize
+    - adaaug.Posterize
+    - adaaug.AutoContrast
+    - adaaug.Invert
+    - adaaug.Equalize
+    - adaaug.Cutout
+  at: 1.0
+# h's shape and the starting policy's seed (AdaAugPolicyHook; the search's h starts from
+# the same shape): popped by host_kwargs.
+policy:
+  n_layers: 0               # --n_proj_layer: a linear h
+  n_hidden: 128             # --n_proj_hidden
+  seed: 0
+# The search (scripts/adaaug_search.py), not the host's: popped by host_kwargs. Defaults
+# are AdaAug's search.sh on reduced CIFAR-10 (src/adaaug/search.py); the budget is the
+# user's to set. One search per arm of the recipe (its prune), with the task below's
+# segmentor; every backbone then trains on what it finds.
+search:
+  task: mmseg_segformer_b0  # the search's segmentor gf (+ that dataset's recipe, pretrained backbone)
+  train_size: 4000          # images gf trains on (reduced CIFAR-10's ~4000), capped at the split
+  epochs: 200
+  batch_size: 8             # gf's exploit batch
+  search_freq: 3            # an explore every 3 steps of an epoch (--search_freq)
+  explore_batch: 16         # held-out images an explore (get_search_divider: 16, 32 for WRN-40-2)
+  explore_split: val        # where the held-out images come from, through the training pipeline
+  policy_lr: 0.001          # h's Adam (--proj_learning_rate), betas (0.9, 0.999)
+  policy_weight_decay: 0.001  # --proj_weight_decay
+  grad_clip: 5.0            # gf's gradient norm
+  lr_min_ratio: 0.01        # gf's cosine schedule ends at this share of its lr (0.001 / 0.1)
+  save_every: 20            # epochs between epoch_<N>/ saves (state.pt every epoch)
+  log_interval: 20
+  num_workers: 4
+  seed: 0

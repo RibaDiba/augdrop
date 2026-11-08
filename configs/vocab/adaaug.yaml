@@ -1,0 +1,7 @@
+# AdaAug's 16 ops at its operation.py ranges (vocab/families/adaaug.py): Fast
+# AutoAugment's ops, deepaa's PIL implementations with madaug's Cutout and Flip, the 9
+# signed ops split into _pos/_neg (25 ops). Solarize, Posterize and Cutout step with the
+# magnitude; AutoContrast, Invert, Equalize and Flip have none. Identity is the host's
+# per-image no-op, not an op.
+families: [adaaug]
+exclude: []
