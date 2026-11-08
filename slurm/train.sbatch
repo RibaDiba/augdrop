@@ -123,6 +123,21 @@ set -o pipefail
 #                                   on the search's starting policy (every op equal, p = mu
 #                                   = 0.5): the trunk of the search-then-train recipe,
 #                                   probed at 25% before any search runs
+#   GAA_POLICY=<path>               host greedy_autoaugment only: its searched policy
+#                                   (host.policy_file). Default
+#                                   <WORK_DIR>/gaa_search_<dataset>_<BACKBONE>/final.json,
+#                                   what slurm/gaa_search.sbatch <dataset> writes; the run
+#                                   refuses to start without one. GAA_POLICY=initial trains
+#                                   with no policy (the search's starting point): the trunk
+#                                   of the search-then-train recipe, probed at 25% before
+#                                   any search runs, and, run to the end, its no-search arm
+#   ADAAUG_POLICY=<dir>|initial     host adaaug only, required: initial trains on the search's
+#                                   starting policy (an untrained h on the live model's
+#                                   features, k = 1): the trunk of the search-then-train
+#                                   recipe, probed at 25% before any search runs. A search's
+#                                   output dir (slurm/adaaug_search.sbatch, holding final/)
+#                                   trains on its policy, h and the search segmentor frozen:
+#                                   each arm's fork of the trunk
 #   FORK_FROM=<run>/keep/iter_<N>.pth
 #                                   a fork: a new run that starts where another run's
 #                                   checkpoint left off (train.py --fork-from), named
@@ -331,6 +346,31 @@ if [ "${HOST}" = "faster_autoaugment" ]; then
             echo "       (FAA_POLICY=initial for the starting policy)." >&2
             exit 1; }
         extra+=("host.policy_file=$(cd "$(dirname "${FAA_POLICY}")" && pwd)/$(basename "${FAA_POLICY}")")
+    fi
+fi
+if [ "${HOST}" = "greedy_autoaugment" ]; then
+    if [ "${GAA_POLICY:-}" = "initial" ]; then
+        extra+=("host.policy_file=initial")
+    else
+        GAA_POLICY="${GAA_POLICY:-${WORK_DIR}/gaa_search_${DATASET}_${BACKBONE}/final.json}"
+        [ -f "${GAA_POLICY}" ] || {
+            echo "ERROR: no Greedy AutoAugment policy at ${GAA_POLICY}. Search one first" >&2
+            echo "       (bash slurm/submit.sh <name> slurm/gaa_search.sbatch ${DATASET}), or set GAA_POLICY" >&2
+            echo "       (GAA_POLICY=initial to train with no policy)." >&2
+            exit 1; }
+        extra+=("host.policy_file=$(cd "$(dirname "${GAA_POLICY}")" && pwd)/$(basename "${GAA_POLICY}")")
+    fi
+fi
+if [ "${HOST}" = "adaaug" ]; then
+    if [ "${ADAAUG_POLICY:-}" = "initial" ]; then
+        extra+=("host.policy_file=initial")
+    else
+        [ -n "${ADAAUG_POLICY:-}" ] && [ -f "${ADAAUG_POLICY}/final/meta.json" ] || {
+            echo "ERROR: host adaaug needs ADAAUG_POLICY: 'initial' (the search's starting policy, the" >&2
+            echo "       trunk) or a finished search's dir holding final/meta.json" >&2
+            echo "       (bash slurm/submit.sh <name> slurm/adaaug_search.sbatch ${DATASET}); got '${ADAAUG_POLICY:-}'." >&2
+            exit 1; }
+        extra+=("host.policy_file=$(cd "${ADAAUG_POLICY}" && pwd)")
     fi
 fi
 [ -n "${NMS_NULL:-}" ] && extra+=("selector.null_arm=${NMS_NULL}" "selector.null_seed=${NMS_NULL_SEED}")

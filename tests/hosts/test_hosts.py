@@ -12,6 +12,8 @@ from hosts.augmix import AugMixDiffHost
 from hosts.autoaugment import IMAGENET_POLICY, AutoAugmentDiffHost, AutoAugmentHost, vocab_name
 from hosts.deep_autoaugment import DeepAutoAugmentHost
 from hosts.faster_autoaugment import FasterAutoAugmentHost
+from hosts.adaaug import AdaAugHost
+from hosts.greedy_autoaugment import GreedyAutoAugmentHost
 from hosts.madaug import MADAugHost
 from hosts.randaugment import (
     IDENTITY,
@@ -54,6 +56,8 @@ FACTORIES = {
     "faster_autoaugment": lambda: FasterAutoAugmentHost(probe_interval=1000),
     "deep_autoaugment": lambda: DeepAutoAugmentHost(probe_interval=1000),
     "adversarial_autoaugment": lambda: AdversarialAutoAugmentHost(probe_interval=1000),
+    "greedy_autoaugment": lambda: GreedyAutoAugmentHost(probe_interval=1000),
+    "adaaug": lambda: AdaAugHost(probe_interval=1000),
     "uniform": lambda: UniformHost(probe_interval=1000),
 }
 

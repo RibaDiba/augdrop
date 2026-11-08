@@ -9,18 +9,24 @@ and `autoaugment`'s. `faster_aa` is Faster AutoAugment's 17 ops (its 9 signed on
 into _pos/_neg), whose magnitudes come from a searched policy, not bins. `deepaa` is
 Deep AutoAugment's ImageNet search space and `advaa` Adversarial AutoAugment's 16 ops
 (AutoAugment's Table 6), both PIL's ops with their signed ones split; their magnitudes
-come from their hosts' policies, not bins."""
+come from their hosts' policies, not bins. `greedy_aa` is Greedy AutoAugment's 20 ops (the TF
+AutoAugment CIFAR code's, at its 32 px ranges as fractions of the image), on `deepaa`'s
+bodies, its signed ops split; its host maps a level to each op's magnitude. `adaaug` is
+AdaAug's 16 ops (Fast AutoAugment's, at its ranges), on `deepaa`'s bodies and `madaug`'s
+Cutout and Flip, its signed ops split; its host maps the policy's level to each op."""
 
 from typing import Callable, Dict, Tuple
 
 from ..op import OpSpec
 from . import (
+    adaaug,
     advaa,
     augmix_diff,
     autoaugment,
     deepaa,
     faster_aa,
     geometric,
+    greedy_aa,
     legacy_hsv,
     madaug,
     pil_autoaug,
@@ -48,6 +54,8 @@ FAMILIES: Dict[str, Tuple[OpSpec, ...]] = {
         faster_aa,
         deepaa,
         advaa,
+        greedy_aa,
+        adaaug,
     )
 }
 

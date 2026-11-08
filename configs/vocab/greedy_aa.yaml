@@ -1,0 +1,7 @@
+# Greedy AutoAugment's 20 ops (vocab/families/greedy_aa.py): the TF AutoAugment CIFAR
+# code's, at its 32 px ranges as fractions of the image, on deepaa's differentiable bodies,
+# the 5 signed geometric ops and the 4 enhance ops split into _pos/_neg (29 ops).
+# Solarize, Posterize and Cutout step with the magnitude; FlipLR, FlipUD, AutoContrast,
+# Equalize, Invert, Blur and Smooth have none.
+families: [greedy_aa]
+exclude: []

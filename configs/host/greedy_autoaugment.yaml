@@ -1,0 +1,52 @@
+# Greedy AutoAugment (Naghizadeh et al., 2020) over its 29 ops (vocab greedy_aa): the top
+# 25 chains of a greedy search (scripts/gaa_search.py, slurm/gaa_search.sbatch), in 5 ranked
+# sets; per image, the image as it is (0.75) or a chain of a set drawn by the paper's Eq. 2
+# (alpha 2). The host is src/hosts/greedy_autoaugment.py; the search loop src/greedyaa/.
+# Trainable: the mmseg preprocessor applies the chain's steps on GPU.
+defaults:
+  - override /vocab@_global_.vocab: greedy_aa
+
+name: greedy_autoaugment
+# The searched policy: the search's <out>/final.json (or level_<c>.json, the policy from
+# its first c levels). Absolute, or relative to where the entry point runs (the repo root).
+# `initial` is the search's starting point, no augmentation, trainable: the trunk of the
+# search-then-train recipe (train.sbatch GAA_POLICY=initial), probed at 25% to decide the
+# ops the search runs over. null is the same, probe-only (check_trainable refuses it).
+policy_file: null
+probe_interval: ${probe.schedule.interval}
+probe_iters: ${probe.schedule.iters}
+control_iters: ${probe.schedule.control_iters}
+# The probe at a fixed magnitude in the recipe (probe.magnitude_mode=fixed): the 18 split
+# ops and CropBilinear go through autograd. The ops with no derivative in their magnitude
+# are faded in: Solarize's and Posterize's steps, Cutout's hard edge, and the five with
+# none (AutoContrast, Equalize, Invert, Blur, Smooth). FlipLR and FlipUD are out of
+# probing and pruning: faded, a flipped image is a ghost of two frames that no one label
+# matches; they get an unprobed NaN row, which R sets aside and no selector prunes.
+fade:
+  ops:
+    - greedy_aa.Solarize
+    - greedy_aa.Posterize
+    - greedy_aa.Cutout
+    - greedy_aa.AutoContrast
+    - greedy_aa.Equalize
+    - greedy_aa.Invert
+    - greedy_aa.Blur
+    - greedy_aa.Smooth
+  at: 1.0
+# The search (scripts/gaa_search.py), not the host's: popped by host_kwargs. The budget is
+# the user's (2026-11-07), cut from the paper's where marked; every key is a knob. The child
+# is the task the search is composed with (gaa_search.py --backbone / --task, as train.py):
+# the run's own, as the paper's children share the trained network's architecture.
+search:
+  levels: 2              # k, greedy levels (the paper's 5): 250 trials a level over all ops
+  top: 25                # d, chains kept, over every level's trials (the paper's)
+  set_size: 5            # lambda, chains a set (the paper's)
+  alpha: 2.0             # Eq. 2 (the paper's)
+  epochs: 5              # a child's training, over its train images (the paper's)
+  train_size: 1000       # train images a child trains on (the paper's: the whole train split)
+  score_size: 500        # other train images it is scored on, mIoU (the paper's: 2500 of 50k)
+  resolution: 0.5        # the child's image scale, crop and window with it (the paper's: 1)
+  batch_size: null       # a child's batch on its one GPU; null: the trunk's (task.batch_size x 4)
+  gpus: 4                # children trained at once, one per GPU
+  num_workers: 4
+  seed: 0                # the train / score draw, and every child's init and data order

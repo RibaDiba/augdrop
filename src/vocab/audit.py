@@ -153,12 +153,15 @@ def _expect(condition: bool, detail: str) -> None:
 
 def _class_scene(batch_size: int, size: Tuple[int, int], device) -> Tuple[torch.Tensor, torch.Tensor]:
     """An image whose pixel classes can be read back off its colours: four
-    quadrants, one class each, and the matching (B, H, W) label."""
+    quadrants, one class each, and the matching (B, H, W) label. The quadrants meet a
+    third of the way in, not at the centre, so a zoom about the centre
+    (``greedy_aa.CropBilinear``) moves the label too."""
     h, w = size
+    cy, cx = h // 3, w // 3
     label = torch.zeros(h, w, dtype=torch.long)
-    label[: h // 2, w // 2 :] = 1
-    label[h // 2 :, : w // 2] = 2
-    label[h // 2 :, w // 2 :] = 3
+    label[:cy, cx:] = 1
+    label[cy:, :cx] = 2
+    label[cy:, cx:] = 3
     image = _CLASS_COLOURS[label].permute(2, 0, 1)  # (3, H, W)
     images = image.unsqueeze(0).repeat(batch_size, 1, 1, 1).to(device)
     labels = label.unsqueeze(0).repeat(batch_size, 1, 1).to(device)
